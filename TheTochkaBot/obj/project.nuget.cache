@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "dgSpecHash": "oqfUGo49fCk=",
+  "dgSpecHash": "yQ1cV40HYBw=",
   "success": true,
   "projectFilePath": "/Users/mac/Desktop/digital projects/TheTochkaBot/TheTochkaBot/TheTochkaBot.csproj",
   "expectedPackageFiles": [
@@ -18,7 +18,10 @@
     "/Users/mac/.nuget/packages/system.codedom/7.0.0/system.codedom.7.0.0.nupkg.sha512",
     "/Users/mac/.nuget/packages/system.management/7.0.2/system.management.7.0.2.nupkg.sha512",
     "/Users/mac/.nuget/packages/system.text.json/8.0.5/system.text.json.8.0.5.nupkg.sha512",
-    "/Users/mac/.nuget/packages/telegram.bot/22.5.1/telegram.bot.22.5.1.nupkg.sha512"
+    "/Users/mac/.nuget/packages/telegram.bot/22.5.1/telegram.bot.22.5.1.nupkg.sha512",
+    "/Users/mac/.nuget/packages/microsoft.netcore.app.ref/8.0.17/microsoft.netcore.app.ref.8.0.17.nupkg.sha512",
+    "/Users/mac/.nuget/packages/microsoft.aspnetcore.app.ref/8.0.17/microsoft.aspnetcore.app.ref.8.0.17.nupkg.sha512",
+    "/Users/mac/.nuget/packages/microsoft.netcore.app.host.osx-arm64/8.0.17/microsoft.netcore.app.host.osx-arm64.8.0.17.nupkg.sha512"
   ],
   "logs": []
 }
