@@ -87,7 +87,7 @@ public class TelegramExpenseBot
         string description = "";
 
         // Special case for 'Под ЗП'
-        if (category.Equals("Под Зп", StringComparison.OrdinalIgnoreCase))
+        if (category.Equals("Под ЗП", StringComparison.OrdinalIgnoreCase))
         {
             var parts = messageText.Trim().Split(' ', 3, StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length == 3)
@@ -110,14 +110,14 @@ public class TelegramExpenseBot
         // Send confirmation message to user (Telegram.Bot v22+)
         await _botClient.SendMessage(
             chatId: update.Message.Chat.Id,
-            text: $"Расход успешно добавлен: {category} - {amount}₽ ({date})" + (string.IsNullOrWhiteSpace(description) ? "" : $" для сотрудника: {description}"),
+            text: $"Расход успешно добавлен: {category} - {amount}kzt ({date})" + (string.IsNullOrWhiteSpace(description) ? "" : $" для сотрудника: {description}"),
             cancellationToken: token
         );
     }
 
     private Task HandleErrorAsync(ITelegramBotClient bot, Exception exception, CancellationToken token)
     {
-        Console.WriteLine($"Ошибка: {exception.Message}");
+        Console.WriteLine($"Ошибка: {exception.Message} {exception.StackTrace}");
         return Task.CompletedTask;
     }
 
