@@ -19,6 +19,8 @@ public class TelegramExpenseBot
     private readonly SheetsService _sheetsService;
     private readonly string _spreadsheetId;
     private readonly Regex _expenseRegex = new(@"^(.+?)\s+(\d+(\.\d{1,2})?)$", RegexOptions.IgnoreCase);
+    private readonly ExpenseReportService _expenseReportService;
+    private readonly string _botUsername = "the_tochka_expenditures_bot";
 
     public TelegramExpenseBot(string telegramBotToken, string spreadsheetId, GoogleCredential credential)
     {
@@ -29,6 +31,7 @@ public class TelegramExpenseBot
             HttpClientInitializer = credential,
             ApplicationName = "Telegram Expense Bot",
         });
+        _expenseReportService = new ExpenseReportService(_sheetsService, _spreadsheetId);
     }
 
     public void Start()
@@ -48,10 +51,11 @@ public class TelegramExpenseBot
     private async Task HandleUpdateAsync(ITelegramBotClient bot, Update update, CancellationToken token)
     {
         if (update.Message is not { Text: { } messageText }) return;
-
-        if (messageText.Trim().Equals("/weaklyreport", StringComparison.OrdinalIgnoreCase))
+        string trimmed = messageText.Trim();
+        if (trimmed.Equals("/weaklyreport", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Equals($"/weaklyreport@{_botUsername}", StringComparison.OrdinalIgnoreCase))
         {
-            string report = await GetWeeklyReportAsync();
+            string report = await _expenseReportService.GetWeeklyReportAsync();
             await _botClient.SendMessage(
                 chatId: update.Message.Chat.Id,
                 text: report,
@@ -59,9 +63,10 @@ public class TelegramExpenseBot
             );
             return;
         }
-        if (messageText.Trim().Equals("/monthlyreport", StringComparison.OrdinalIgnoreCase))
+        if (trimmed.Equals("/monthlyreport", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Equals($"/monthlyreport@{_botUsername}", StringComparison.OrdinalIgnoreCase))
         {
-            string report = await GetMonthlyReportAsync();
+            string report = await _expenseReportService.GetMonthlyReportAsync();
             await _botClient.SendMessage(
                 chatId: update.Message.Chat.Id,
                 text: report,
@@ -178,78 +183,6 @@ public class TelegramExpenseBot
     {
         var sheet = spreadsheet.Sheets.FirstOrDefault(s => s.Properties.Title == sheetName);
         return sheet?.Properties.SheetId;
-    }
-
-    private async Task<string> GetWeeklyReportAsync()
-    {
-        // Get current week range
-        DateTime today = DateTime.Today;
-        int delta = DayOfWeek.Monday - today.DayOfWeek;
-        DateTime weekStart = today.AddDays(delta);
-        DateTime weekEnd = weekStart.AddDays(6);
-        string monthSheetName = today.ToString("MMMM yyyy", new CultureInfo("ru-RU"));
-
-        // Read all rows from the current month sheet
-        var response = await _sheetsService.Spreadsheets.Values.Get(_spreadsheetId, $"{monthSheetName}!A2:C").ExecuteAsync();
-        var values = response.Values;
-        if (values == null || values.Count == 0)
-            return "Нет данных за эту неделю.";
-
-        var reportDict = new Dictionary<string, decimal>();
-        foreach (var row in values)
-        {
-            if (row.Count < 3) continue;
-            string type = row[0].ToString();
-            if (!decimal.TryParse(row[1].ToString(), out decimal amount)) continue;
-            if (!DateTime.TryParse(row[2].ToString(), out DateTime date)) continue;
-            if (date >= weekStart && date <= weekEnd)
-            {
-                if (!reportDict.ContainsKey(type)) reportDict[type] = 0;
-                reportDict[type] += amount;
-            }
-        }
-        if (reportDict.Count == 0)
-            return "Нет расходов за эту неделю.";
-        var report = "Отчет за неделю (" + weekStart.ToString("dd.MM") + " - " + weekEnd.ToString("dd.MM") + ")\n";
-        foreach (var kv in reportDict)
-            report += $"{kv.Key}: {kv.Value}₽\n";
-        return report;
-    }
-
-    private async Task<string> GetMonthlyReportAsync()
-    {
-        // Get last month
-        DateTime today = DateTime.Today;
-        DateTime firstDayOfThisMonth = new DateTime(today.Year, today.Month, 1);
-        DateTime lastMonth = firstDayOfThisMonth.AddMonths(-1);
-        string monthSheetName = lastMonth.ToString("MMMM yyyy", new CultureInfo("ru-RU"));
-
-        // Read all rows from the last month sheet
-        var response = await _sheetsService.Spreadsheets.Values.Get(_spreadsheetId, $"{monthSheetName}!A2:C").ExecuteAsync();
-        var values = response.Values;
-        if (values == null || values.Count == 0)
-            return "Нет данных за прошлый месяц.";
-
-        var reportDict = new Dictionary<string, decimal>();
-        foreach (var row in values)
-        {
-            if (row.Count < 3) continue;
-            string type = row[0]?.ToString() ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(type)) continue;
-            if (!decimal.TryParse(row[1]?.ToString(), out decimal amount)) continue;
-            if (!DateTime.TryParse(row[2]?.ToString(), out DateTime date)) continue;
-            if (date.Month == lastMonth.Month && date.Year == lastMonth.Year)
-            {
-                if (!reportDict.ContainsKey(type)) reportDict[type] = 0;
-                reportDict[type] += amount;
-            }
-        }
-        if (reportDict.Count == 0)
-            return "Нет расходов за прошлый месяц.";
-        var report = "Отчет за прошлый месяц (" + monthSheetName + ")\n";
-        foreach (var kv in reportDict)
-            report += $"{kv.Key}: {kv.Value}₽\n";
-        return report;
     }
 }
 
