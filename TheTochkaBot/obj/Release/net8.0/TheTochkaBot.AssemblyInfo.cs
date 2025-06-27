@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("TheTochkaBot")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+e25fa795a7579c4608e76459153adfefc45f83b5")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+af908b8d0020832d33223e5fc849b9d355870c41")]
 [assembly: System.Reflection.AssemblyProductAttribute("TheTochkaBot")]
 [assembly: System.Reflection.AssemblyTitleAttribute("TheTochkaBot")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
