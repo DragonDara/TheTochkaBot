@@ -16,75 +16,105 @@ public class ExpenseReportService
     public async Task<string> GetWeeklyReportAsync()
     {
         DateTime today = DateTime.Today;
-        int delta = DayOfWeek.Monday - today.DayOfWeek;
-        DateTime weekStart = today.AddDays(delta);
-        DateTime weekEnd = weekStart.AddDays(6);
-        string monthSheetName = today.ToString("MMMM yyyy", new CultureInfo("ru-RU"));
+        DateTime weekStart = today.AddDays(-6); // 7 days including today
+        DateTime weekEnd = today;
 
-        var response = await _sheetsService.Spreadsheets.Values.Get(_spreadsheetId, $"{monthSheetName}!A2:C").ExecuteAsync();
-        var values = response.Values;
-        if (values == null || values.Count == 0)
-            return "Нет данных за эту неделю.";
+        // Collect all relevant sheet names for the week range
+        var sheetNames = new HashSet<string>();
+        for (var date = weekStart; date <= weekEnd; date = date.AddDays(1))
+        {
+            sheetNames.Add(date.ToString("MMMM yyyy", new CultureInfo("ru-RU")));
+        }
 
         var reportDict = new Dictionary<string, decimal>();
-        foreach (var row in values)
+        bool hasData = false;
+        foreach (var sheetName in sheetNames)
         {
-            if (row.Count < 3) continue;
-            string type = row[0]?.ToString() ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(type)) continue;
-            if (!decimal.TryParse(row[1]?.ToString(), out decimal amount)) continue;
-            if (!DateTime.TryParse(row[2]?.ToString(), out DateTime date)) continue;
-            if (date >= weekStart && date <= weekEnd)
+            var spreadsheet = await _sheetsService.Spreadsheets.Get(_spreadsheetId).ExecuteAsync();
+            if (!spreadsheet.Sheets.Any(s => s.Properties.Title == sheetName)) continue;
+            var response = await _sheetsService.Spreadsheets.Values.Get(_spreadsheetId, $"{sheetName}!A2:C").ExecuteAsync();
+            var values = response.Values;
+            if (values == null || values.Count == 0) continue;
+            hasData = true;
+            foreach (var row in values)
             {
-                if (!reportDict.ContainsKey(type)) reportDict[type] = 0;
-                reportDict[type] += amount;
+                if (row.Count < 3) continue;
+                string type = row[0]?.ToString() ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(type)) continue;
+                if (!decimal.TryParse(row[1]?.ToString(), out decimal amount)) continue;
+                if (!DateTime.TryParse(row[2]?.ToString(), out DateTime date)) continue;
+                if (date >= weekStart && date <= weekEnd)
+                {
+                    if (!reportDict.ContainsKey(type)) reportDict[type] = 0;
+                    reportDict[type] += amount;
+                }
             }
         }
+        if (!hasData)
+            return "Нет данных за последние 7 дней.";
         if (reportDict.Count == 0)
-            return "Нет расходов за эту неделю.";
-        var report = "Отчет за неделю (" + weekStart.ToString("dd.MM") + " - " + weekEnd.ToString("dd.MM") + ")\n";
+            return "Нет расходов за последние 7 дней.";
+        var report = "Отчет за 7 дней (" + weekStart.ToString("dd.MM") + " - " + weekEnd.ToString("dd.MM") + ")\n";
+        decimal total = 0;
         foreach (var kv in reportDict)
+        {
             report += $"{kv.Key}: {kv.Value}kzt\n";
+            total += kv.Value;
+        }
+        report += $"Всего: {total}kzt\n";
         return report;
     }
 
     public async Task<string> GetMonthlyReportAsync()
     {
         DateTime today = DateTime.Today;
-        DateTime firstDayOfThisMonth = new DateTime(today.Year, today.Month, 1);
-        DateTime lastMonth = firstDayOfThisMonth.AddMonths(-1);
-        string monthSheetName = lastMonth.ToString("MMMM yyyy", new CultureInfo("ru-RU"));
+        int daysInMonth = DateTime.DaysInMonth(today.Year, today.Month);
+        DateTime monthStart = today.AddDays(-(daysInMonth - 1)); // last 30 or 31 days including today
+        DateTime monthEnd = today;
 
-        // Check if the sheet exists before querying
-        var spreadsheet = await _sheetsService.Spreadsheets.Get(_spreadsheetId).ExecuteAsync();
-        bool sheetExists = spreadsheet.Sheets.Any(s => s.Properties.Title == monthSheetName);
-        if (!sheetExists)
-            return "Нет данных за прошлый месяц.";
-
-        var response = await _sheetsService.Spreadsheets.Values.Get(_spreadsheetId, $"{monthSheetName}!A2:C").ExecuteAsync();
-        var values = response.Values;
-        if (values == null || values.Count == 0)
-            return "Нет данных за прошлый месяц.";
+        // Collect all relevant sheet names for the month range
+        var sheetNames = new HashSet<string>();
+        for (var date = monthStart; date <= monthEnd; date = date.AddDays(1))
+        {
+            sheetNames.Add(date.ToString("MMMM yyyy", new CultureInfo("ru-RU")));
+        }
 
         var reportDict = new Dictionary<string, decimal>();
-        foreach (var row in values)
+        bool hasData = false;
+        foreach (var sheetName in sheetNames)
         {
-            if (row.Count < 3) continue;
-            string type = row[0]?.ToString() ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(type)) continue;
-            if (!decimal.TryParse(row[1]?.ToString(), out decimal amount)) continue;
-            if (!DateTime.TryParse(row[2]?.ToString(), out DateTime date)) continue;
-            if (date.Month == lastMonth.Month && date.Year == lastMonth.Year)
+            var spreadsheet = await _sheetsService.Spreadsheets.Get(_spreadsheetId).ExecuteAsync();
+            if (!spreadsheet.Sheets.Any(s => s.Properties.Title == sheetName)) continue;
+            var response = await _sheetsService.Spreadsheets.Values.Get(_spreadsheetId, $"{sheetName}!A2:C").ExecuteAsync();
+            var values = response.Values;
+            if (values == null || values.Count == 0) continue;
+            hasData = true;
+            foreach (var row in values)
             {
-                if (!reportDict.ContainsKey(type)) reportDict[type] = 0;
-                reportDict[type] += amount;
+                if (row.Count < 3) continue;
+                string type = row[0]?.ToString() ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(type)) continue;
+                if (!decimal.TryParse(row[1]?.ToString(), out decimal amount)) continue;
+                if (!DateTime.TryParse(row[2]?.ToString(), out DateTime date)) continue;
+                if (date >= monthStart && date <= monthEnd)
+                {
+                    if (!reportDict.ContainsKey(type)) reportDict[type] = 0;
+                    reportDict[type] += amount;
+                }
             }
         }
+        if (!hasData)
+            return $"Нет данных за последние {daysInMonth} дней.";
         if (reportDict.Count == 0)
-            return "Нет расходов за прошлый месяц.";
-        var report = "Отчет за прошлый месяц (" + monthSheetName + ")\n";
+            return $"Нет расходов за последние {daysInMonth} дней.";
+        var report = $"Отчет за {daysInMonth} дней (" + monthStart.ToString("dd.MM") + " - " + monthEnd.ToString("dd.MM") + ")\n";
+        decimal total = 0;
         foreach (var kv in reportDict)
+        {
             report += $"{kv.Key}: {kv.Value}kzt\n";
+            total += kv.Value;
+        }
+        report += $"Всего: {total}kzt\n";
         return report;
     }
 }
