@@ -16,7 +16,7 @@ GoogleCredential credential = GoogleCredential
     .FromJson(json)
     .CreateScoped(new[] { SheetsService.Scope.Spreadsheets });
 
-var bot = new TelegramExpenseBot("7825623899:AAFUMnPSRc7gaoVwC_WnOBKTEkRrd_ivd44", "1qFVzB8USG0L9YtV-6ymnYTLothxBOU_1KYl0iunNO5Y", credential);
+var bot = new TelegramExpenseBot("7825623899:AAEPYC9z_4mMZEr7cKvmG-Y9-KYRymkfo9Q", "1qFVzB8USG0L9YtV-6ymnYTLothxBOU_1KYl0iunNO5Y", credential);
 bot.Start();
 Console.WriteLine("Telegram Expense Bot is run");
 

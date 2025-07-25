@@ -1,0 +1,12 @@
+# Build, tag, and push Docker image to Azure Container Registry (linux/amd64)
+# Replace <youracrname> with your Azure Container Registry name
+# Replace <your-image-name> with your desired image name (e.g., thetochkabot)
+
+# 1. Build the Docker image for linux/amd64
+DOCKER_DEFAULT_PLATFORM=linux/amd64 docker build -t thetochka.azurecr.io/thetochkabot:latest .
+
+# 2. Log in to Azure Container Registry
+az acr login --name thetochka
+
+# 3. Push the image to ACR
+docker push thetochka.azurecr.io/thetochkabot:latest
