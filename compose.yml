@@ -1,0 +1,6 @@
+services:
+
+  bot:
+    build:
+      context: .
+      target: builder

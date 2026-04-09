@@ -1,0 +1,563 @@
+import type { Context } from '#root/bot/context.js'
+import { payrollCalendarData } from '#root/bot/callback-data/payroll-calendar.js'
+import { GREETING_CONVERSATION } from '#root/bot/conversations/greeting.js'
+import {
+  ensureJsonCalendarSheetRowForUsername,
+  findJsonCalendarSheetRowForUsername,
+} from '#root/bot/helpers/json-calendar-sheet.js'
+import { logHandle } from '#root/bot/helpers/logging.js'
+import {
+  appendSalaryPaymentHistoryRow,
+  computePayrollRequestAmountFromUsersRow,
+  monthKeyAndLabelFromRequestDate,
+  periodRangeTextFromDayKeys,
+  removeSalaryPaymentHistoryRow,
+  weekDayKeysEndingYesterday,
+} from '#root/bot/helpers/payment-history-sheet.js'
+import {
+  isCalendarDayAfterTodayAqtobe,
+  maxCalendarMonth,
+  minCalendarMonth,
+  navigateMonth,
+} from '#root/bot/helpers/payroll-calendar-bounds.js'
+import {
+  clearUserCalendarColumnC,
+  readUserCalendarColumnC,
+  writeUserCalendarColumnC,
+} from '#root/bot/helpers/payroll-user-calendar-c.js'
+import {
+  clearUserCalendarColumnD,
+  readUserCalendarColumnD,
+} from '#root/bot/helpers/payroll-user-calendar-d.js'
+import { findUsersPayrollRowByUsername } from '#root/bot/helpers/payroll-users-sheet.js'
+import { usernameForSheetMatching } from '#root/bot/helpers/telegram-usernames.js'
+import { createEmployeeUserActionsKeyboard } from '#root/bot/keyboards/employee-reply.js'
+import { createHomeReplyKeyboard } from '#root/bot/keyboards/main-reply.js'
+import { createPayrollCalendarKeyboard } from '#root/bot/keyboards/payroll-calendar.js'
+import { Composer } from 'grammy'
+
+const composer = new Composer<Context>()
+
+async function tryDeleteChatMessage(ctx: Context, chatId: number, messageId: number) {
+  try {
+    await ctx.api.deleteMessage(chatId, messageId)
+  }
+  catch {
+    // уже удалено, нет прав, слишком старое
+  }
+}
+
+/** Перед новым «Запросить зарплату»: старый календарь, подсказка действий и прошлое текстовое сообщение пользователя. */
+async function cleanupPreviousPayrollFlowMessages(ctx: Context) {
+  const chatId = ctx.chat?.id
+  if (chatId === undefined)
+    return
+  const uc = ctx.session.userCustomCalendar
+  if (uc) {
+    await tryDeleteChatMessage(ctx, chatId, uc.calendarMessageId)
+    if (uc.actionsHintMessageId !== undefined)
+      await tryDeleteChatMessage(ctx, chatId, uc.actionsHintMessageId)
+    ctx.session.userCustomCalendar = undefined
+  }
+  const prevUser = ctx.session.previousPayrollRequestUserMessageId
+  if (prevUser !== undefined) {
+    await tryDeleteChatMessage(ctx, chatId, prevUser)
+    ctx.session.previousPayrollRequestUserMessageId = undefined
+  }
+}
+
+function parseDayKey(key: string): { y: number, m: number, d: number } | null {
+  const parts = key.split('-')
+  if (parts.length !== 3)
+    return null
+  const y = Number(parts[0])
+  const mo = Number(parts[1])
+  const d = Number(parts[2])
+  if (![y, mo, d].every(n => Number.isFinite(n)))
+    return null
+  return { y, m: mo, d }
+}
+
+function dayKeyTimeMs(key: string): number | null {
+  const p = parseDayKey(key)
+  if (!p)
+    return null
+  return new Date(p.y, p.m, p.d).getTime()
+}
+
+function userCustomCalendarKbOpts(uc: NonNullable<Context['session']['userCustomCalendar']>) {
+  const merged = [...new Set([...uc.lockedSavedDayKeys, ...uc.draftSelectedKeys])]
+  return {
+    userCustomRangeSelection: true as const,
+    userCustomUserDayKeys: merged,
+    userLockedSavedDayKeys: uc.lockedSavedDayKeys,
+    userPayrollSettlement: uc.payrollSettlement,
+  }
+}
+
+const feature = composer.chatType('private')
+
+feature.command('start', logHandle('command-start'), async (ctx) => {
+  return ctx.reply(ctx.t('welcome'), {
+    reply_markup: await createHomeReplyKeyboard(ctx),
+  })
+})
+
+feature.command('greeting', logHandle('command-greeting'), (ctx) => {
+  return ctx.conversation.enter(GREETING_CONVERSATION)
+})
+
+feature
+  .filter(ctx => ctx.has('message:text') && ctx.message.text === ctx.t('salary-btn-request'))
+  .on(
+    'message:text',
+    logHandle('salary-request-payroll'),
+    async (ctx) => {
+      await cleanupPreviousPayrollFlowMessages(ctx)
+
+      const now = new Date()
+      const y = now.getFullYear()
+      const mon = now.getMonth()
+      const localeCode = await ctx.i18n.getLocale()
+
+      let jsonCalendarSheetRow: number | null = null
+      let lockedSavedDayKeys: string[] = []
+      let payrollSettlement = undefined as
+        | NonNullable<Context['session']['userCustomCalendar']>['payrollSettlement']
+        | undefined
+      if (ctx.config.sheetsSpreadsheetId.trim()) {
+        const sheetUser = usernameForSheetMatching(ctx)
+        if (!sheetUser) {
+          return ctx.reply(ctx.t('salary-request-no-username'), {
+            reply_markup: await createHomeReplyKeyboard(ctx),
+          })
+        }
+        jsonCalendarSheetRow = await findJsonCalendarSheetRowForUsername(ctx, sheetUser)
+        if (jsonCalendarSheetRow !== null) {
+          const fromC = await readUserCalendarColumnC(ctx, jsonCalendarSheetRow)
+          if (fromC)
+            lockedSavedDayKeys = [...new Set(fromC.userGreenDayKeys)]
+          try {
+            const fromD = await readUserCalendarColumnD(ctx, jsonCalendarSheetRow)
+            payrollSettlement = fromD?.payrollSettlement
+          }
+          catch (error) {
+            ctx.logger.warn({ err: error }, 'Failed to read JSON calendar column D for user custom flow')
+          }
+        }
+      }
+
+      const calMsg = await ctx.reply(ctx.t('user-request-custom-prompt'), {
+        reply_markup: createPayrollCalendarKeyboard(ctx, y, mon, localeCode, {
+          userCustomRangeSelection: true,
+          userCustomUserDayKeys: lockedSavedDayKeys,
+          userLockedSavedDayKeys: lockedSavedDayKeys,
+          userPayrollSettlement: payrollSettlement,
+        }),
+      })
+      const hintMsg = await ctx.reply(ctx.t('user-request-custom-actions-hint'), {
+        reply_markup: createEmployeeUserActionsKeyboard(ctx, { includeWeekRequest: true }),
+      })
+      ctx.session.userCustomCalendar = {
+        calendarYear: y,
+        calendarMonth: mon,
+        calendarChatId: calMsg.chat.id,
+        calendarMessageId: calMsg.message_id,
+        actionsHintMessageId: hintMsg.message_id,
+        lockedSavedDayKeys,
+        draftSelectedKeys: [],
+        jsonCalendarSheetRow,
+        paymentHistorySheetRows: [],
+        payrollSettlement,
+      }
+      if (ctx.chat?.id !== undefined && ctx.message?.message_id !== undefined)
+        ctx.session.previousPayrollRequestUserMessageId = ctx.message.message_id
+    },
+  )
+
+feature
+  .filter(ctx =>
+    ctx.has('message:text')
+    && ctx.message.text === ctx.t('timesheet-btn-fill'),
+  )
+  .on(
+    'message:text',
+    logHandle('user-timesheet-fill-entered'),
+    async (ctx) => {
+      return ctx.reply(ctx.t('timesheet-btn-fill'), {
+        reply_markup: await createHomeReplyKeyboard(ctx),
+      })
+    },
+  )
+
+feature
+  .filter(ctx =>
+    ctx.has('message:text')
+    && Boolean(ctx.session.userCustomCalendar)
+    && ctx.message.text === ctx.t('user-btn-request-week'),
+  )
+  .on(
+    'message:text',
+    logHandle('user-request-week-shortcut'),
+    async (ctx) => {
+      const uc = ctx.session.userCustomCalendar
+      if (!uc)
+        return
+      const weekKeys = weekDayKeysEndingYesterday(new Date())
+      const locked = new Set(uc.lockedSavedDayKeys)
+      const pick = weekKeys.filter(k => !locked.has(k))
+      if (pick.length === 0) {
+        return ctx.reply(ctx.t('user-calendar-week-no-free-days'), {
+          reply_markup: createEmployeeUserActionsKeyboard(ctx, { includeWeekRequest: true }),
+        })
+      }
+      uc.draftSelectedKeys = pick
+      const sorted = [...pick].sort((a, b) => (dayKeyTimeMs(a) ?? 0) - (dayKeyTimeMs(b) ?? 0))
+      const first = sorted[0]!
+      const p = parseDayKey(first)
+      if (p) {
+        uc.calendarYear = p.y
+        uc.calendarMonth = p.m
+      }
+      const localeCode = await ctx.i18n.getLocale()
+      const kb = createPayrollCalendarKeyboard(
+        ctx,
+        uc.calendarYear,
+        uc.calendarMonth,
+        localeCode,
+        userCustomCalendarKbOpts(uc),
+      )
+      try {
+        await ctx.api.editMessageReplyMarkup(
+          uc.calendarChatId,
+          uc.calendarMessageId,
+          { reply_markup: kb },
+        )
+      }
+      catch (error) {
+        ctx.logger.error({ err: error }, 'Failed to apply week shortcut to calendar')
+      }
+    },
+  )
+
+feature
+  .filter(ctx =>
+    ctx.has('message:text')
+    && Boolean(ctx.session.userCustomCalendar)
+    && ctx.message.text === ctx.t('employee-btn-distribute-save'),
+  )
+  .on(
+    'message:text',
+    logHandle('user-custom-calendar-save'),
+    async (ctx) => {
+      const uc = ctx.session.userCustomCalendar
+      if (!uc)
+        return
+      const chatId = ctx.chat?.id
+      if (chatId !== undefined && uc.lastSaveAckPair) {
+        await tryDeleteChatMessage(ctx, chatId, uc.lastSaveAckPair.userMessageId)
+        await tryDeleteChatMessage(ctx, chatId, uc.lastSaveAckPair.botMessageId)
+        uc.lastSaveAckPair = undefined
+      }
+      const sheetUser = usernameForSheetMatching(ctx)
+      if (!sheetUser) {
+        return ctx.reply(ctx.t('salary-request-no-username'), {
+          reply_markup: createEmployeeUserActionsKeyboard(ctx, { includeWeekRequest: true }),
+        })
+      }
+      if (uc.draftSelectedKeys.length === 0) {
+        return ctx.reply(ctx.t('user-calendar-save-empty-draft'), {
+          reply_markup: createEmployeeUserActionsKeyboard(ctx, { includeWeekRequest: true }),
+        })
+      }
+      const draftKeys = uc.draftSelectedKeys
+      const greenCount = draftKeys.length
+      const allLockedAfterSave = [...new Set([...uc.lockedSavedDayKeys, ...draftKeys])]
+      const userGreenAll = allLockedAfterSave
+      const spreadsheetId = ctx.config.sheetsSpreadsheetId.trim()
+      try {
+        let row = uc.jsonCalendarSheetRow
+        if (row == null)
+          row = await ensureJsonCalendarSheetRowForUsername(ctx, sheetUser)
+        await writeUserCalendarColumnC(ctx, row, {
+          userGreenDayKeys: userGreenAll,
+        })
+        uc.jsonCalendarSheetRow = row
+        try {
+          await clearUserCalendarColumnD(ctx, row)
+        }
+        catch (error) {
+          ctx.logger.warn({ err: error, row }, 'Failed to clear JSON calendar column D after new save')
+        }
+        uc.payrollSettlement = undefined
+      }
+      catch (error) {
+        ctx.logger.error({ err: error, row: uc.jsonCalendarSheetRow }, 'Failed to save user calendar column C')
+        return ctx.reply(ctx.t('user-calendar-c-save-error'), {
+          reply_markup: createEmployeeUserActionsKeyboard(ctx, { includeWeekRequest: true }),
+        })
+      }
+
+      let usersPayrollHit: Awaited<ReturnType<typeof findUsersPayrollRowByUsername>> = null
+      if (spreadsheetId) {
+        usersPayrollHit = await findUsersPayrollRowByUsername(ctx, sheetUser)
+        if (!usersPayrollHit) {
+          return ctx.reply(ctx.t('user-calendar-c-save-no-users-row'), {
+            reply_markup: createEmployeeUserActionsKeyboard(ctx, { includeWeekRequest: true }),
+          })
+        }
+      }
+
+      if (usersPayrollHit && spreadsheetId) {
+        const requestedAmount = computePayrollRequestAmountFromUsersRow(usersPayrollHit.row, greenCount)
+        if (requestedAmount === null) {
+          ctx.logger.warn(
+            { row: usersPayrollHit.rowNumber, greenCount },
+            'Users D/E invalid or D=0 — cannot compute request amount',
+          )
+          return ctx.reply(ctx.t('user-calendar-users-ed-invalid'), {
+            reply_markup: createEmployeeUserActionsKeyboard(ctx, { includeWeekRequest: true }),
+          })
+        }
+        const periodKeys = [...new Set(draftKeys)]
+        const requestedAt = new Date()
+        const { monthKey, monthLabel } = monthKeyAndLabelFromRequestDate(requestedAt)
+        const periodText = periodRangeTextFromDayKeys(periodKeys)
+        const fio = String(usersPayrollHit.row[1] ?? '').trim()
+        const position = String(usersPayrollHit.row[6] ?? '').trim()
+        try {
+          const histRow = await appendSalaryPaymentHistoryRow(ctx, {
+            monthKey,
+            monthLabel,
+            fio,
+            position,
+            requestedAt,
+            periodText,
+            greenDayCount: greenCount,
+            requestGreenDayKeys: periodKeys,
+            requestedAmount,
+            status: 'Запрошена',
+          })
+          uc.paymentHistorySheetRows = [...uc.paymentHistorySheetRows, histRow]
+        }
+        catch (error) {
+          ctx.logger.error({ err: error, spreadsheetId }, 'Failed to append payment history (custom save)')
+        }
+      }
+
+      uc.lockedSavedDayKeys = allLockedAfterSave
+      uc.draftSelectedKeys = []
+
+      try {
+        const localeCodeAfterSave = await ctx.i18n.getLocale()
+        const kbAfterSave = createPayrollCalendarKeyboard(
+          ctx,
+          uc.calendarYear,
+          uc.calendarMonth,
+          localeCodeAfterSave,
+          userCustomCalendarKbOpts(uc),
+        )
+        await ctx.api.editMessageReplyMarkup(
+          uc.calendarChatId,
+          uc.calendarMessageId,
+          { reply_markup: kbAfterSave },
+        )
+      }
+      catch (error) {
+        ctx.logger.warn({ err: error }, 'Failed to refresh calendar after custom save')
+      }
+
+      const saveOkMsg = await ctx.reply(ctx.t('user-calendar-c-save-ok'), {
+        reply_markup: createEmployeeUserActionsKeyboard(ctx, { includeWeekRequest: true }),
+      })
+      if (ctx.message?.message_id !== undefined)
+        uc.lastSaveAckPair = { userMessageId: ctx.message.message_id, botMessageId: saveOkMsg.message_id }
+      return saveOkMsg
+    },
+  )
+
+feature
+  .filter(ctx =>
+    ctx.has('message:text')
+    && Boolean(ctx.session.userCustomCalendar)
+    && ctx.message.text === ctx.t('employee-btn-distribute-reset'),
+  )
+  .on(
+    'message:text',
+    logHandle('user-custom-calendar-reset'),
+    async (ctx) => {
+      const uc = ctx.session.userCustomCalendar
+      if (!uc)
+        return
+      uc.lockedSavedDayKeys = []
+      uc.draftSelectedKeys = []
+      uc.payrollSettlement = undefined
+
+      const spreadsheetId = ctx.config.sheetsSpreadsheetId.trim()
+
+      if (spreadsheetId && uc.paymentHistorySheetRows.length > 0) {
+        for (const phRow of [...uc.paymentHistorySheetRows].sort((a, b) => b - a)) {
+          try {
+            await removeSalaryPaymentHistoryRow(ctx, phRow)
+          }
+          catch (error) {
+            ctx.logger.error({ err: error, row: phRow }, 'Failed to remove payment history row on reset')
+          }
+        }
+        uc.paymentHistorySheetRows = []
+      }
+
+      if (uc.jsonCalendarSheetRow !== null && uc.jsonCalendarSheetRow !== undefined) {
+        try {
+          await clearUserCalendarColumnC(ctx, uc.jsonCalendarSheetRow)
+        }
+        catch (error) {
+          ctx.logger.error({ err: error, row: uc.jsonCalendarSheetRow }, 'Failed to clear user calendar column C')
+          await ctx.reply(ctx.t('user-calendar-c-reset-sheet-error'), {
+            reply_markup: createEmployeeUserActionsKeyboard(ctx, { includeWeekRequest: true }),
+          })
+        }
+        try {
+          await clearUserCalendarColumnD(ctx, uc.jsonCalendarSheetRow)
+        }
+        catch (error) {
+          ctx.logger.error({ err: error, row: uc.jsonCalendarSheetRow }, 'Failed to clear user calendar column D')
+        }
+      }
+
+      const localeCode = await ctx.i18n.getLocale()
+      const kbReset = createPayrollCalendarKeyboard(
+        ctx,
+        uc.calendarYear,
+        uc.calendarMonth,
+        localeCode,
+        userCustomCalendarKbOpts(uc),
+      )
+      try {
+        await ctx.api.editMessageReplyMarkup(
+          uc.calendarChatId,
+          uc.calendarMessageId,
+          { reply_markup: kbReset },
+        )
+      }
+      catch (error) {
+        ctx.logger.error({ err: error }, 'Failed to reset user custom calendar markup')
+      }
+    },
+  )
+
+feature
+  .filter(ctx =>
+    ctx.has('message:text')
+    && Boolean(ctx.session.userCustomCalendar)
+    && ctx.message.text === ctx.t('employee-btn-back'),
+  )
+  .on(
+    'message:text',
+    logHandle('user-custom-calendar-exit'),
+    async (ctx) => {
+      ctx.session.userCustomCalendar = undefined
+      return ctx.reply(ctx.t('welcome'), {
+        reply_markup: await createHomeReplyKeyboard(ctx),
+      })
+    },
+  )
+
+feature.callbackQuery(
+  payrollCalendarData.filter(),
+  logHandle('payroll-calendar'),
+  async (ctx) => {
+    const { a, m, y, d } = payrollCalendarData.unpack(ctx.callbackQuery.data)
+    const localeCode = await ctx.i18n.getLocale()
+    const now = new Date()
+    const min = minCalendarMonth(now)
+    const max = maxCalendarMonth(now)
+    const uc = ctx.session.userCustomCalendar
+    const msgId = ctx.callbackQuery.message?.message_id
+    const isUserCustomCalendar = Boolean(uc && msgId !== undefined && msgId === uc.calendarMessageId)
+
+    if (a === 'd' && d > 0) {
+      if (isCalendarDayAfterTodayAqtobe(y, m, d)) {
+        await ctx.answerCallbackQuery()
+        return
+      }
+      if (isUserCustomCalendar && uc) {
+        const key = `${y}-${m}-${d}`
+        const locked = new Set(uc.lockedSavedDayKeys)
+        if (locked.has(key)) {
+          await ctx.answerCallbackQuery()
+          return
+        }
+        const draft = new Set(uc.draftSelectedKeys)
+        if (draft.has(key))
+          draft.delete(key)
+        else
+          draft.add(key)
+        uc.draftSelectedKeys = [...draft].sort(
+          (a, b) => (dayKeyTimeMs(a) ?? 0) - (dayKeyTimeMs(b) ?? 0),
+        )
+
+        uc.calendarYear = y
+        uc.calendarMonth = m
+
+        const kb = createPayrollCalendarKeyboard(ctx, y, m, localeCode, userCustomCalendarKbOpts(uc))
+        try {
+          await ctx.editMessageReplyMarkup({ reply_markup: kb })
+        }
+        catch (error) {
+          ctx.logger.error({ err: error }, 'Failed to edit user custom calendar after day click')
+        }
+        await ctx.answerCallbackQuery()
+        return
+      }
+
+      await ctx.answerCallbackQuery()
+      return
+    }
+
+    if (a === 'x') {
+      await ctx.answerCallbackQuery({
+        show_alert: true,
+        text: ctx.t('user-calendar-settled-day-alert'),
+      })
+      return
+    }
+
+    if (a !== 'p' && a !== 'n') {
+      await ctx.answerCallbackQuery()
+      return
+    }
+
+    const dir: -1 | 1 = a === 'p' ? -1 : 1
+    const { y: ny, m: nm } = navigateMonth(y, m, dir, min, max)
+
+    let kb
+    if (isUserCustomCalendar && uc) {
+      uc.calendarYear = ny
+      uc.calendarMonth = nm
+      if (uc.jsonCalendarSheetRow != null && ctx.config.sheetsSpreadsheetId.trim()) {
+        try {
+          const fromD = await readUserCalendarColumnD(ctx, uc.jsonCalendarSheetRow)
+          uc.payrollSettlement = fromD?.payrollSettlement
+        }
+        catch (error) {
+          ctx.logger.warn({ err: error }, 'Failed to refresh JSON calendar column D on month nav')
+        }
+      }
+      kb = createPayrollCalendarKeyboard(ctx, ny, nm, localeCode, userCustomCalendarKbOpts(uc))
+    }
+    else {
+      kb = createPayrollCalendarKeyboard(ctx, ny, nm, localeCode)
+    }
+
+    try {
+      await ctx.editMessageReplyMarkup({ reply_markup: kb })
+    }
+    catch (error) {
+      ctx.logger.error({ err: error }, 'Failed to edit payroll calendar markup')
+    }
+    await ctx.answerCallbackQuery()
+  },
+)
+
+export { composer as welcomeFeature }

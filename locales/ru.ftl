@@ -1,0 +1,83 @@
+## Commands
+
+start =
+    .description = Запускает бота
+language =
+    .description = Изменяет язык
+setcommands =
+    .description = Создает команды для бота
+
+## Welcome Feature
+
+welcome = Добро пожаловать!
+salary-btn-request = Запросить зарплату
+timesheet-btn-fill = Заполнить табель
+salary-request-no-username = Укажите публичный никнейм в настройках Telegram — в таблице сопоставление идёт по @username, а не по числовому id.
+salary-request-not-found = Вашего имени нет в списке.
+salary-request-error = Сейчас не могу запросить зарплату.
+user-request-custom-prompt = Выберите дни — нажмите на каждую нужную дату (повторное нажатие снимает выбор)
+user-request-custom-actions-hint = Действия:
+user-btn-request-week = Запросить за неделю
+user-calendar-c-save-ok = Сохранено.
+user-calendar-c-save-error = Не удалось записать в таблицу.
+user-calendar-c-save-no-row = Не удалось сохранить: не удалось определить пользователя.
+user-calendar-c-save-no-users-row = Календарь сохранён, но строка на листе Users не найдена (проверьте @username в колонке A).
+user-calendar-users-ed-invalid = Не удалось посчитать сумму: проверьте столбцы D и E на листе Users (D не должен быть 0).
+user-calendar-c-reset-sheet-error = Календарь сброшен, но не удалось очистить ячейку в таблице.
+user-calendar-save-empty-draft = Сначала отметьте хотя бы один день на календаре, затем нажмите «Сохранить».
+user-calendar-week-no-free-days = Все дни этой недели уже сохранены. Выберите другие даты или сбросьте календарь.
+user-calendar-settled-day-alert = Вы уже получили оплату за эти дни.
+calendar-weekday-mon = Пн
+calendar-weekday-tue = Вт
+calendar-weekday-wed = Ср
+calendar-weekday-thu = Чт
+calendar-weekday-fri = Пт
+calendar-weekday-sat = Сб
+calendar-weekday-sun = Вс
+
+## Language Feature
+
+language-select = Пожалуйста, выберите ваш язык
+language-changed = Язык был успешно изменён!
+keyboard-refreshed = Подписи на кнопках обновлены.
+
+## Admin Feature
+
+admin-commands-updated = Команды обновлены.
+
+## Employee Feature
+
+employee-btn-users = Пользователи
+employee-btn-requested-payrolls = Запрошенные зарплаты
+employee-btn-distribute-save = Сохранить
+employee-btn-distribute-reset = Сбросить изменения
+employee-btn-back = Отмена
+employee-distribute-calendar-prompt = Календарь по выбранному сотруднику. Листайте месяцы стрелками.
+employee-distribute-limit-f-exceeded = Нельзя выбрать больше { $max } дней.
+employee-distribute-f-invalid = В столбце F нет допустимого числа; выбор дней недоступен.
+employee-distribute-actions-hint = Действия:
+employee-distribute-exited = Режим распределения закрыт.
+employee-distribute-save-ok = Сохранено.
+employee-distribute-save-error = Не удалось записать в Google Таблицу.
+employee-distribute-save-no-telegram = В строке листа не найден telegram_id (колонка A).
+employee-users-empty = Список пользователей пуст.
+employee-user-number-invalid = Пожалуйста, отправьте корректный номер пользователя из списка.
+employee-user-selected = Выбран пользователь: { $userId }
+employee-back-to-users = Назад. Снова выберите номер пользователя.
+employee-requested-payrolls-empty = Пока нет запросов на зарплату.
+employee-requested-payrolls-read-error = Не могу прочитать диапазон Google Sheets "{ $range }". Проверь имя листа и переменную `SHEETS_PAYMENT_HISTORY_RANGE` (или `SHEETS_PAYROLL_REQUESTS_RANGE` для других экранов).
+employee-requested-payrolls-done = Готово.
+employee-users-list-done = Готово.
+employee-user-distribute-days = Распределить дни
+employee-approve-question = Одобрить зарплату?
+employee-approve-already-handled = Уже обработано.
+employee-approve-yes = Да
+employee-approve-no = Нет
+employee-approve-saved = Сохранено.
+employee-approve-error = Сейчас не могу сохранить.
+employee-approve-message-yes = Зарплата одобрена для { $fio }.
+employee-approve-message-no = Зарплата не одобрена для { $fio }.
+
+## Unhandled Feature
+
+unhandled = Неопознанная команда. Попробуйте /start

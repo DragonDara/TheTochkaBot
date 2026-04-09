@@ -1,0 +1,14 @@
+services:
+  bot:
+    ports:
+      - '3000:80'
+    volumes:
+      - '.:/usr/src'
+      - /usr/src/node_modules
+      - "C:/Users/ilyas/JSON-keys/telegrambot-cafe-paycheks-1fc298f92623.json:/usr/src/keys/sa.json:ro"
+    env_file:
+      - .env.bot.dev
+    command: npm run dev
+    environment:
+     - SHEETS_CREDENTIALS_PATH=/usr/src/keys/sa.json
+     - SHEETS_SPREADSHEET_ID=1Wal3O4XH9jLGgoltIKUNm0-oY7nqA-5XL1YH63OZicU

@@ -1,0 +1,8 @@
+services:
+
+  bot:
+    build:
+      context: .
+      target: runner
+    env_file:
+      - .env.bot.prod
