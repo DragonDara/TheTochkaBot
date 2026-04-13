@@ -179,6 +179,21 @@ function paymentHistoryLocation(ctx: Context): { sheetName: string, startRow: nu
   return { sheetName, startRow, prefix: a1SheetPrefix(sheetName) }
 }
 
+/** Колонка F листа Payment History — текст периода запроса (как при записи из `appendSalaryPaymentHistoryRow`). */
+export async function readPaymentHistoryPeriodCellF(ctx: Context, sheetRow: number): Promise<string> {
+  const spreadsheetId = ctx.config.sheetsSpreadsheetId.trim()
+  if (!spreadsheetId)
+    return ''
+  const { prefix } = paymentHistoryLocation(ctx)
+  try {
+    const vals = await ctx.sheetsRepo.readRange(spreadsheetId, `${prefix}!F${sheetRow}`)
+    return String(vals[0]?.[0] ?? '').trim()
+  }
+  catch {
+    return ''
+  }
+}
+
 export function normalizePayrollStatusCell(s: string): string {
   return s.trim().toLowerCase()
 }

@@ -90,6 +90,32 @@ export async function findUsersPayrollRowByUsername(
   return { rowNumber: startRow + rowIndex, row: values[rowIndex]! }
 }
 
+/** Колонка G (индекс 6 в A:H) — должность; ключ — `normalizeTelegramUsername` колонки A. */
+export async function usersPayrollPositionByNormalizedUsernameMap(
+  ctx: Context,
+): Promise<Map<string, string>> {
+  const spreadsheetId = ctx.config.sheetsSpreadsheetId.trim()
+  const dataRange = usersPayrollSheetDataRange(ctx)
+  const out = new Map<string, string>()
+  if (!spreadsheetId || !dataRange)
+    return out
+  let values: string[][]
+  try {
+    values = await ctx.sheetsRepo.readRange(spreadsheetId, dataRange, usersSheetReadOptions)
+  }
+  catch {
+    return out
+  }
+  for (const r of values) {
+    const key = normalizeTelegramUsername(String(r[0] ?? ''))
+    if (!key)
+      continue
+    const pos = String(r[6] ?? '').trim()
+    out.set(key, pos)
+  }
+  return out
+}
+
 /** Номер строки на листе Users (колонка B = ФИО). При дубликатах ФИО — первая найденная строка. */
 export async function findUsersPayrollRowNumberByFio(ctx: Context, fio: string): Promise<number | null> {
   const trimmed = fio.trim()

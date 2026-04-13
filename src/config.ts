@@ -51,6 +51,14 @@ const baseConfigSchema = v.object({
     ),
     '\'Payment History\'!A2:K',
   ),
+  /** Лист Identification: A — @username, B — telegram_id, C — chat_id (новые пользователи при /start). */
+  sheetsIdentificationRange: v.optional(
+    v.pipe(
+      v.string(),
+      v.transform(s => (s.trim() === '' ? 'Identification!A2:C' : s.trim())),
+    ),
+    'Identification!A2:C',
+  ),
 })
 
 const configSchema = v.variant('botMode', [
@@ -102,6 +110,7 @@ export type Config = v.InferOutput<typeof configSchema> & {
   sheetsJsonCalendarRange: string
   sheetsTimesheetRange: string
   sheetsPaymentHistoryRange: string
+  sheetsIdentificationRange: string
 }
 export type PollingConfig = v.InferOutput<typeof configSchema['options'][0]> & {
   botAdmins: string[]
@@ -112,6 +121,7 @@ export type PollingConfig = v.InferOutput<typeof configSchema['options'][0]> & {
   sheetsJsonCalendarRange: string
   sheetsTimesheetRange: string
   sheetsPaymentHistoryRange: string
+  sheetsIdentificationRange: string
 }
 export type WebhookConfig = v.InferOutput<typeof configSchema['options'][1]> & {
   botAdmins: string[]
@@ -122,6 +132,7 @@ export type WebhookConfig = v.InferOutput<typeof configSchema['options'][1]> & {
   sheetsJsonCalendarRange: string
   sheetsTimesheetRange: string
   sheetsPaymentHistoryRange: string
+  sheetsIdentificationRange: string
 }
 
 export function createConfig(input: v.InferInput<typeof configSchema>) {

@@ -1,5 +1,7 @@
 import type { Context } from '#root/bot/context.js'
 import { a1SheetPrefix } from '#root/bot/helpers/json-calendar-sheet.js'
+import { usersPayrollPositionByNormalizedUsernameMap } from '#root/bot/helpers/payroll-users-sheet.js'
+import { normalizeTelegramUsername } from '#root/bot/helpers/telegram-usernames.js'
 import { resolveTimesheetSheetLocation } from '#root/bot/helpers/timesheet-sheet.js'
 
 /** A=0 … AH=33 (31 день), AI=34. */
@@ -27,6 +29,8 @@ export function normalizeTimesheetApprovalStatusCell(s: string): 'pending' | 'ap
 export interface TimesheetPendingApprovalItem {
   sheetRow: number
   fio: string
+  /** Должность с листа Users (G), по нику из колонки B табеля. */
+  position: string
   monthLabel: string
 }
 
@@ -55,6 +59,7 @@ export async function listTimesheetPendingApproval(
     throw new Error('read timesheet')
   }
 
+  const positionByNick = await usersPayrollPositionByNormalizedUsernameMap(ctx)
   const out: TimesheetPendingApprovalItem[] = []
   let blockMonthLabel = ''
   for (let i = 0; i < rows.length; i++) {
@@ -78,9 +83,12 @@ export async function listTimesheetPendingApproval(
     const statusRaw = String(row[COL_AI_INDEX] ?? '')
     if (normalizeTimesheetApprovalStatusCell(statusRaw) !== 'pending')
       continue
+    const nickKey = normalizeTelegramUsername(nick)
+    const position = nickKey ? (positionByNick.get(nickKey) ?? '') : ''
     out.push({
       sheetRow: startRow + i,
       fio,
+      position,
       monthLabel,
     })
   }

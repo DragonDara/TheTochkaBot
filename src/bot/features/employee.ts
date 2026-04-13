@@ -147,7 +147,8 @@ async function sendEmployeeRequestedTimesheetsFlow(ctx: Context) {
         timesheetApprovalData.pack({ row: r.sheetRow, value: PAYROLL_APPROVAL_CB_NO }),
       )
 
-    const text = `${r.fio}\n${r.monthLabel}\n\n${ctx.t('employee-timesheet-approve-question')}`
+    const head = r.position.trim() ? `${r.fio} - ${r.position.trim()}` : r.fio
+    const text = `${head}\n${r.monthLabel}\n\n${ctx.t('employee-timesheet-approve-question')}`
     await ctx.reply(text, { reply_markup: keyboard })
   }
 

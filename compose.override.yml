@@ -11,4 +11,4 @@ services:
     command: npm run dev
     environment:
      - SHEETS_CREDENTIALS_PATH=/usr/src/keys/sa.json
-     - SHEETS_SPREADSHEET_ID=1Wal3O4XH9jLGgoltIKUNm0-oY7nqA-5XL1YH63OZicU
+     - SHEETS_SPREADSHEET_ID=1YHETrUvvgIcA_Bu2WICLqlnuYAGgyFCw08ox47kLM7M

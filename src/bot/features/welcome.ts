@@ -2,6 +2,8 @@ import type { Context } from '#root/bot/context.js'
 import { payrollCalendarData } from '#root/bot/callback-data/payroll-calendar.js'
 import { timesheetCalendarData } from '#root/bot/callback-data/timesheet-calendar.js'
 import { GREETING_CONVERSATION } from '#root/bot/conversations/greeting.js'
+import { notifyAccountantsText } from '#root/bot/helpers/accountant-notify.js'
+import { appendIdentificationUserIfNew } from '#root/bot/helpers/identification-sheet.js'
 import {
   ensureJsonCalendarSheetRowForUsername,
   findJsonCalendarSheetRowForUsername,
@@ -13,6 +15,7 @@ import {
   monthKeyAndLabelFromRequestDate,
   monthLabelRuFromParts,
   periodRangeTextFromDayKeys,
+  readPaymentHistoryPeriodCellF,
   removeSalaryPaymentHistoryRow,
   weekDayKeysEndingYesterday,
 } from '#root/bot/helpers/payment-history-sheet.js'
@@ -165,6 +168,14 @@ function timesheetCalendarKbOpts(ts: NonNullable<Context['session']['timesheetCa
 const feature = composer.chatType('private')
 
 feature.command('start', logHandle('command-start'), async (ctx) => {
+  if (ctx.config.sheetsSpreadsheetId.trim()) {
+    try {
+      await appendIdentificationUserIfNew(ctx)
+    }
+    catch (error) {
+      ctx.logger.warn({ err: error }, 'Failed to append user to Identification sheet')
+    }
+  }
   return ctx.reply(ctx.t('welcome'), {
     reply_markup: await createHomeReplyKeyboard(ctx),
   })
@@ -383,12 +394,12 @@ feature
         }
 
         const now = new Date()
+        const monthsToWrite = timesheetMonthsToWriteRowsFor(merged, now)
         try {
           const jsonRow = await ensureJsonCalendarSheetRowForUsername(ctx, sheetUser)
           const { current, next } = buildTimesheetJsonEfPayloads(merged, now)
           await writeJsonCalendarTimesheetColumnsEF(ctx, jsonRow, current, next)
 
-          const monthsToWrite = timesheetMonthsToWriteRowsFor(merged, now)
           const pendingOnly = [...(ts.pendingClearTimesheetDahForMonths ?? [])]
           for (const { y, m } of pendingOnly) {
             if (monthsToWrite.some(w => w.y === y && w.m === m))
@@ -450,6 +461,22 @@ feature
         }
         catch (error) {
           ctx.logger.warn({ err: error }, 'Failed to refresh timesheet calendar after save')
+        }
+
+        try {
+          const monthsLabel = monthsToWrite.length > 0
+            ? monthsToWrite.map(({ y, m }) => monthLabelRuFromParts(y, m)).join(', ')
+            : '—'
+          const actorRow = await findUsersPayrollRowByUsername(ctx, sheetUser)
+          const position = String(actorRow?.row[6] ?? '').trim() || '—'
+          const fio = String(actorRow?.row[1] ?? '').trim() || '—'
+          await notifyAccountantsText(
+            ctx,
+            ctx.t('accountant-notify-timesheet-saved', { position, fio, months: monthsLabel }),
+          )
+        }
+        catch (error) {
+          ctx.logger.warn({ err: error }, 'Accountant notify after timesheet save failed')
         }
 
         const saveOkMsg = await ctx.reply(ctx.t('user-calendar-c-save-ok'), {
@@ -548,6 +575,19 @@ feature
             status: 'Запрошена',
           })
           uc.paymentHistorySheetRows = [...uc.paymentHistorySheetRows, histRow]
+          try {
+            await notifyAccountantsText(
+              ctx,
+              ctx.t('accountant-notify-payroll-period', {
+                position: position || '—',
+                fio: fio || '—',
+                period: periodText || '—',
+              }),
+            )
+          }
+          catch (errNotify) {
+            ctx.logger.warn({ err: errNotify }, 'Accountant notify after payroll save failed')
+          }
         }
         catch (error) {
           ctx.logger.error({ err: error, spreadsheetId }, 'Failed to append payment history (custom save)')
@@ -697,6 +737,22 @@ feature
         catch (error) {
           ctx.logger.error({ err: error }, 'Failed to reset timesheet calendar markup')
         }
+        try {
+          const clearedMonths = [minM, maxM].filter(({ y, m }) => !ymApproved(y, m))
+          const monthsLabel = clearedMonths.length > 0
+            ? clearedMonths.map(({ y, m }) => monthLabelRuFromParts(y, m)).join(', ')
+            : '—'
+          const actorTsReset = sheetUser ? await findUsersPayrollRowByUsername(ctx, sheetUser) : null
+          const position = String(actorTsReset?.row[6] ?? '').trim() || '—'
+          const fio = String(actorTsReset?.row[1] ?? '').trim() || '—'
+          await notifyAccountantsText(
+            ctx,
+            ctx.t('accountant-notify-timesheet-reset', { position, fio, months: monthsLabel }),
+          )
+        }
+        catch (error) {
+          ctx.logger.warn({ err: error }, 'Accountant notify after timesheet reset failed')
+        }
         return ctx.reply(ctx.t('timesheet-reset-ok'), {
           reply_markup: createEmployeeUserActionsKeyboard(ctx, {}),
         })
@@ -704,6 +760,20 @@ feature
 
       if (!uc)
         return
+      const sheetUserPayrollReset = usernameForSheetMatching(ctx)
+      let payrollResetPeriod = '—'
+      if (uc.paymentHistorySheetRows.length > 0) {
+        payrollResetPeriod = await readPaymentHistoryPeriodCellF(
+          ctx,
+          Math.max(...uc.paymentHistorySheetRows),
+        ) || '—'
+      }
+      const actorPayrollReset = sheetUserPayrollReset
+        ? await findUsersPayrollRowByUsername(ctx, sheetUserPayrollReset)
+        : null
+      const payrollResetPosition = String(actorPayrollReset?.row[6] ?? '').trim() || '—'
+      const payrollResetFio = String(actorPayrollReset?.row[1] ?? '').trim() || '—'
+
       uc.lockedSavedDayKeys = []
       uc.draftSelectedKeys = []
       uc.payrollSettlement = undefined
@@ -757,6 +827,20 @@ feature
       }
       catch (error) {
         ctx.logger.error({ err: error }, 'Failed to reset user custom calendar markup')
+      }
+
+      try {
+        await notifyAccountantsText(
+          ctx,
+          ctx.t('accountant-notify-payroll-reset', {
+            position: payrollResetPosition,
+            fio: payrollResetFio,
+            period: payrollResetPeriod,
+          }),
+        )
+      }
+      catch (error) {
+        ctx.logger.warn({ err: error }, 'Accountant notify after payroll reset failed')
       }
     },
   )
@@ -932,6 +1016,19 @@ feature.callbackQuery(
       }
 
       await ctx.answerCallbackQuery()
+      return
+    }
+
+    if (a === 'i') {
+      await ctx.answerCallbackQuery()
+      return
+    }
+
+    if (a === 'm' && d > 0) {
+      await ctx.answerCallbackQuery({
+        show_alert: true,
+        text: ctx.t('timesheet-anchor-other-month-alert'),
+      })
       return
     }
 
