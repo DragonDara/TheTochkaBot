@@ -6,6 +6,7 @@ import {
   PAYROLL_APPROVAL_CB_YES,
   payrollApprovalData,
 } from '#root/bot/callback-data/payroll-approval.js'
+import { timesheetApprovalData } from '#root/bot/callback-data/timesheet-approval.js'
 import { isEmployee } from '#root/bot/filters/is-employee.js'
 import {
   findJsonCalendarSheetRowForUsername,
@@ -30,6 +31,10 @@ import {
   writeUserCalendarColumnD,
 } from '#root/bot/helpers/payroll-user-calendar-d.js'
 import { findUsersPayrollRowNumberByFio } from '#root/bot/helpers/payroll-users-sheet.js'
+import {
+  listTimesheetPendingApproval,
+  updateTimesheetApprovalStatusIfPending,
+} from '#root/bot/helpers/timesheet-approval-sheet.js'
 import { createEmployeeReplyKeyboard } from '#root/bot/keyboards/employee-reply.js'
 import { Composer, InlineKeyboard } from 'grammy'
 
@@ -100,6 +105,57 @@ async function sendEmployeeRequestedPayrollsFlow(ctx: Context) {
   })
 }
 
+async function sendEmployeeRequestedTimesheetsFlow(ctx: Context) {
+  const spreadsheetId = ctx.config.sheetsSpreadsheetId.trim()
+  if (!spreadsheetId) {
+    return ctx.reply(ctx.t('employee-requested-timesheets-empty'), {
+      reply_markup: createEmployeeReplyKeyboard(ctx),
+    })
+  }
+
+  const tsRange = ctx.config.sheetsTimesheetRange.trim()
+  let rows: Awaited<ReturnType<typeof listTimesheetPendingApproval>>
+  try {
+    rows = await listTimesheetPendingApproval(ctx)
+  }
+  catch (error) {
+    ctx.logger.error({
+      err: error,
+      spreadsheetId,
+      range: tsRange,
+    }, 'Failed to read Timesheet for requested timesheets')
+
+    return ctx.reply(ctx.t('employee-requested-timesheets-read-error', { range: tsRange }), {
+      reply_markup: createEmployeeReplyKeyboard(ctx),
+    })
+  }
+
+  if (rows.length === 0) {
+    return ctx.reply(ctx.t('employee-requested-timesheets-empty'), {
+      reply_markup: createEmployeeReplyKeyboard(ctx),
+    })
+  }
+
+  for (const r of rows) {
+    const keyboard = new InlineKeyboard()
+      .text(
+        ctx.t('employee-approve-yes'),
+        timesheetApprovalData.pack({ row: r.sheetRow, value: PAYROLL_APPROVAL_CB_YES }),
+      )
+      .text(
+        ctx.t('employee-approve-no'),
+        timesheetApprovalData.pack({ row: r.sheetRow, value: PAYROLL_APPROVAL_CB_NO }),
+      )
+
+    const text = `${r.fio}\n${r.monthLabel}\n\n${ctx.t('employee-timesheet-approve-question')}`
+    await ctx.reply(text, { reply_markup: keyboard })
+  }
+
+  return ctx.reply(ctx.t('employee-requested-timesheets-done'), {
+    reply_markup: createEmployeeReplyKeyboard(ctx),
+  })
+}
+
 const composer = new Composer<Context>()
 
 const feature = composer
@@ -113,6 +169,16 @@ feature
     logHandle('employee-requested-payrolls'),
     async (ctx) => {
       return sendEmployeeRequestedPayrollsFlow(ctx)
+    },
+  )
+
+feature
+  .filter(ctx => ctx.has('message:text') && ctx.message.text === ctx.t('employee-btn-requested-timesheets'))
+  .on(
+    'message:text',
+    logHandle('employee-requested-timesheets'),
+    async (ctx) => {
+      return sendEmployeeRequestedTimesheetsFlow(ctx)
     },
   )
 
@@ -220,6 +286,46 @@ feature.callbackQuery(
     }
     catch (error) {
       ctx.logger.error({ err: error, spreadsheetId, phSheetRow, approved }, 'Failed to write approval')
+      await ctx.answerCallbackQuery({ text: ctx.t('employee-approve-error') })
+    }
+  },
+)
+
+feature.callbackQuery(
+  timesheetApprovalData.filter(),
+  logHandle('employee-timesheet-approval'),
+  async (ctx) => {
+    const spreadsheetId = ctx.config.sheetsSpreadsheetId.trim()
+
+    if (!spreadsheetId) {
+      await ctx.answerCallbackQuery({
+        text: ctx.t('employee-approve-error'),
+      })
+      return
+    }
+
+    const { row: sheetRow, value: rawCb } = timesheetApprovalData.unpack(ctx.callbackQuery.data)
+    const decision = parsePayrollApprovalDecision(rawCb)
+    if (decision === null) {
+      await ctx.answerCallbackQuery({ text: ctx.t('employee-approve-error') })
+      return
+    }
+    const approved = decision === 'yes'
+    const statusRu = approved ? 'Одобрен' : 'Не одобрен'
+
+    try {
+      const updated = await updateTimesheetApprovalStatusIfPending(ctx, sheetRow, statusRu)
+      if (!updated) {
+        await tryStripApprovalInlineKeyboard(ctx)
+        await ctx.answerCallbackQuery({ text: ctx.t('employee-approve-already-handled') })
+        return
+      }
+
+      await tryStripApprovalInlineKeyboard(ctx)
+      await ctx.answerCallbackQuery({ text: ctx.t('employee-approve-saved') })
+    }
+    catch (error) {
+      ctx.logger.error({ err: error, spreadsheetId, sheetRow, approved }, 'Failed to write timesheet approval')
       await ctx.answerCallbackQuery({ text: ctx.t('employee-approve-error') })
     }
   },

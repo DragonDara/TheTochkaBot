@@ -12,6 +12,7 @@ import type { Context as DefaultContext, SessionFlavor } from 'grammy'
 export interface SessionData {
   /** Сообщение пользователя «Запросить зарплату» с прошлого входа в поток — удалить при следующем. */
   previousPayrollRequestUserMessageId?: number
+  timesheetFillUserMessageId?: number
   /** Пользователь «запрос зарплаты»: только 🟢; дни включаются/снимаются по одному клику. */
   userCustomCalendar?: {
     calendarYear: number
@@ -32,6 +33,27 @@ export interface SessionData {
     paymentHistorySheetRows: number[]
     /** Решение сотрудника по последнему запросу (лист JSON Calendar, колонка D). */
     payrollSettlement?: PayrollSettlementColumnD
+  }
+  /** Поток «Заполнить табель»: лист Timesheet (D:AH) и JSON Calendar E/F; не Payment History. */
+  timesheetCalendar?: {
+    calendarYear: number
+    calendarMonth: number
+    calendarChatId: number
+    calendarMessageId: number
+    actionsHintMessageId?: number
+    lastSaveAckPair?: { userMessageId: number, botMessageId: number }
+    /** Сохранённые дни: 1 — жёлтый, 2 — синий; до «Сбросить» без клика. */
+    lockedDayStates: Record<string, 1 | 2>
+    /** Черновик: число → жёлтый → синий → число. */
+    draftDayStates: Record<string, 1 | 2>
+    /** Пока есть черновик — только этот календарный месяц; после сохранения сбрасывается. */
+    selectionAnchorMonth?: { y: number, m: number }
+    /** Статус AI на листе Timesheet для текущего/следующего месяца (Asia/Aqtobe), ключ `y-m`. */
+    monthApprovalByYm?: Record<string, 'approved' | 'rejected' | 'none'>
+    /** Дни, уже попавшие в одобренный табель при входе (из E/F): только они — ✔️/☑️; новые отметки — 🟡/🔵. */
+    approvedFrozenDayKeys?: string[]
+    /** После «Не одобрен»: очистить D:AH при следующем успешном сохранении табеля. */
+    pendingClearTimesheetDahForMonths?: { y: number, m: number }[]
   }
 }
 

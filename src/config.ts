@@ -27,13 +27,21 @@ const baseConfigSchema = v.object({
   sheetsCredentialsPath: v.optional(v.string(), ''),
   /** Лист Users (зарплата): имя листа и первая строка данных из env; бот читает A–H (роль сотрудника в H). */
   sheetsPayrollRequestsRange: v.optional(v.string(), 'Users!A2:H'),
-  /** Лист JSON Calendar: A — @username, B — JSON сотрудника, C — JSON пользователя (запрос суммы), D — решение по выплате (календарь). Пустая строка в env = значение по умолчанию. */
+  /** Лист JSON Calendar: A — @username, B — JSON сотрудника, C — зарплатный календарь, D — решение по выплате, E/F — JSON табеля (жёлтый/синий по месяцам). */
   sheetsJsonCalendarRange: v.optional(
     v.pipe(
       v.string(),
-      v.transform(s => (s.trim() === '' ? '\'JSON Calendar\'!A2:D' : s.trim())),
+      v.transform(s => (s.trim() === '' ? '\'JSON Calendar\'!A2:F' : s.trim())),
     ),
-    '\'JSON Calendar\'!A2:D',
+    '\'JSON Calendar\'!A2:F',
+  ),
+  /** Лист Timesheet: строки 1–2 не используются; с 3-й — A месяц, B ник, C ФИО, D:AH дни, AI статус. */
+  sheetsTimesheetRange: v.optional(
+    v.pipe(
+      v.string(),
+      v.transform(s => (s.trim() === '' ? '\'Timesheet\'!A3:AI' : s.trim())),
+    ),
+    '\'Timesheet\'!A3:AI',
   ),
   /** Лист истории: A — месяц, B–H — данные; I–J пустые; K — JSON ключей дней запроса (y-m-d). */
   sheetsPaymentHistoryRange: v.optional(
@@ -92,6 +100,7 @@ export type Config = v.InferOutput<typeof configSchema> & {
   sheetsCredentialsPath: string
   sheetsPayrollRequestsRange: string
   sheetsJsonCalendarRange: string
+  sheetsTimesheetRange: string
   sheetsPaymentHistoryRange: string
 }
 export type PollingConfig = v.InferOutput<typeof configSchema['options'][0]> & {
@@ -101,6 +110,7 @@ export type PollingConfig = v.InferOutput<typeof configSchema['options'][0]> & {
   sheetsCredentialsPath: string
   sheetsPayrollRequestsRange: string
   sheetsJsonCalendarRange: string
+  sheetsTimesheetRange: string
   sheetsPaymentHistoryRange: string
 }
 export type WebhookConfig = v.InferOutput<typeof configSchema['options'][1]> & {
@@ -110,6 +120,7 @@ export type WebhookConfig = v.InferOutput<typeof configSchema['options'][1]> & {
   sheetsCredentialsPath: string
   sheetsPayrollRequestsRange: string
   sheetsJsonCalendarRange: string
+  sheetsTimesheetRange: string
   sheetsPaymentHistoryRange: string
 }
 

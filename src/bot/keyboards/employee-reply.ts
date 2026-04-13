@@ -4,6 +4,8 @@ import { Keyboard } from 'grammy'
 export function createEmployeeReplyKeyboard(ctx: Context) {
   return new Keyboard()
     .text(ctx.t('employee-btn-requested-payrolls'))
+    .text(ctx.t('employee-btn-requested-timesheets'))
+    .row()
     .resized()
     .persistent()
 }

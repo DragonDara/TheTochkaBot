@@ -472,8 +472,10 @@ export interface AppendPaymentHistoryInput {
   requestedAt: Date
   periodText: string
   greenDayCount: number
-  /** Ключи дней этого запроса (`y-m-d`) — JSON в колонке K; I и J не заполняются. */
+  /** Ключи дней этого запроса (`y-m-d`) — JSON в колонке K, если {@link writeRequestGreenDayKeysToColumnK} не false. */
   requestGreenDayKeys: string[]
+  /** По умолчанию true. Если false — колонка K пустая (поток «табель»). */
+  writeRequestGreenDayKeysToColumnK?: boolean
   /** Сумма в колонке G листа Payment History: `(E/D)*greenDayCount` по строке Users, посчитано в коде. */
   requestedAmount: number
   status: string
@@ -521,6 +523,8 @@ export async function appendSalaryPaymentHistoryRow(
 
   const e = formatRequestTimestampRu(input.requestedAt)
   const gValue = formatAmountForPaymentHistoryCell(input.requestedAmount)
+  const writeK = input.writeRequestGreenDayKeysToColumnK !== false
+  const kCell = writeK ? formatPaymentHistoryRequestGreenDayKeysCell(input.requestGreenDayKeys) : ''
   const bToK = [[
     String(requestNum),
     input.fio,
@@ -531,7 +535,7 @@ export async function appendSalaryPaymentHistoryRow(
     input.status,
     '',
     '',
-    formatPaymentHistoryRequestGreenDayKeysCell(input.requestGreenDayKeys),
+    kCell,
   ]]
 
   await ctx.sheetsRepo.writeRange(

@@ -1,5 +1,6 @@
 import type { Context } from '#root/bot/context.js'
 import { payrollCalendarData } from '#root/bot/callback-data/payroll-calendar.js'
+import { timesheetCalendarData } from '#root/bot/callback-data/timesheet-calendar.js'
 import { GREETING_CONVERSATION } from '#root/bot/conversations/greeting.js'
 import {
   ensureJsonCalendarSheetRowForUsername,
@@ -10,12 +11,15 @@ import {
   appendSalaryPaymentHistoryRow,
   computePayrollRequestAmountFromUsersRow,
   monthKeyAndLabelFromRequestDate,
+  monthLabelRuFromParts,
   periodRangeTextFromDayKeys,
   removeSalaryPaymentHistoryRow,
   weekDayKeysEndingYesterday,
 } from '#root/bot/helpers/payment-history-sheet.js'
 import {
+  calendarDatePartsAqtobe,
   isCalendarDayAfterTodayAqtobe,
+  isTimesheetDaySelectableAqtobe,
   maxCalendarMonth,
   minCalendarMonth,
   navigateMonth,
@@ -31,9 +35,22 @@ import {
 } from '#root/bot/helpers/payroll-user-calendar-d.js'
 import { findUsersPayrollRowByUsername } from '#root/bot/helpers/payroll-users-sheet.js'
 import { usernameForSheetMatching } from '#root/bot/helpers/telegram-usernames.js'
+import {
+  clearJsonCalendarTimesheetColumnsEF,
+  writeJsonCalendarTimesheetColumnsEF,
+} from '#root/bot/helpers/timesheet-json-calendar.js'
+import { syncTimesheetSessionOnEntry } from '#root/bot/helpers/timesheet-session-sync.js'
+import {
+  buildTimesheetJsonEfPayloads,
+  clearTimesheetDayCellsForUserCurrentAndNextMonths,
+  findTimesheetRowByMonthLabelAndUsername,
+  timesheetMonthsToWriteRowsFor,
+  writeTimesheetDayCellsForMonth,
+} from '#root/bot/helpers/timesheet-sheet.js'
 import { createEmployeeUserActionsKeyboard } from '#root/bot/keyboards/employee-reply.js'
 import { createHomeReplyKeyboard } from '#root/bot/keyboards/main-reply.js'
 import { createPayrollCalendarKeyboard } from '#root/bot/keyboards/payroll-calendar.js'
+import { createTimesheetCalendarKeyboard } from '#root/bot/keyboards/timesheet-calendar.js'
 import { Composer } from 'grammy'
 
 const composer = new Composer<Context>()
@@ -47,8 +64,8 @@ async function tryDeleteChatMessage(ctx: Context, chatId: number, messageId: num
   }
 }
 
-/** Перед новым «Запросить зарплату»: старый календарь, подсказка действий и прошлое текстовое сообщение пользователя. */
-async function cleanupPreviousPayrollFlowMessages(ctx: Context) {
+/** Перед новым потоком календаря: старые inline-календари, подсказки и прошлые текстовые сообщения («зарплата» / «табель»). */
+async function cleanupAllInlineCalendarFlows(ctx: Context) {
   const chatId = ctx.chat?.id
   if (chatId === undefined)
     return
@@ -59,10 +76,22 @@ async function cleanupPreviousPayrollFlowMessages(ctx: Context) {
       await tryDeleteChatMessage(ctx, chatId, uc.actionsHintMessageId)
     ctx.session.userCustomCalendar = undefined
   }
+  const ts = ctx.session.timesheetCalendar
+  if (ts) {
+    await tryDeleteChatMessage(ctx, chatId, ts.calendarMessageId)
+    if (ts.actionsHintMessageId !== undefined)
+      await tryDeleteChatMessage(ctx, chatId, ts.actionsHintMessageId)
+    ctx.session.timesheetCalendar = undefined
+  }
   const prevUser = ctx.session.previousPayrollRequestUserMessageId
   if (prevUser !== undefined) {
     await tryDeleteChatMessage(ctx, chatId, prevUser)
     ctx.session.previousPayrollRequestUserMessageId = undefined
+  }
+  const prevTsFill = ctx.session.timesheetFillUserMessageId
+  if (prevTsFill !== undefined) {
+    await tryDeleteChatMessage(ctx, chatId, prevTsFill)
+    ctx.session.timesheetFillUserMessageId = undefined
   }
 }
 
@@ -95,6 +124,40 @@ function userCustomCalendarKbOpts(uc: NonNullable<Context['session']['userCustom
   }
 }
 
+function refreshTimesheetSelectionAnchorMonth(ts: NonNullable<Context['session']['timesheetCalendar']>) {
+  const hasDraft = Object.keys(ts.draftDayStates).length > 0
+  const hasLocked = Object.keys(ts.lockedDayStates).length > 0
+  if (!hasDraft && !hasLocked) {
+    ts.selectionAnchorMonth = undefined
+    return
+  }
+  /** Якорь только при активном черновике: после «Сохранить» черновик пуст — снова можно отмечать любой из двух месяцев (Aqtobe). */
+  if (!hasDraft) {
+    ts.selectionAnchorMonth = undefined
+    return
+  }
+  if (ts.selectionAnchorMonth !== undefined)
+    return
+  const k = Object.keys(ts.draftDayStates)[0]
+  const p = k ? parseDayKey(k) : null
+  if (p)
+    ts.selectionAnchorMonth = { y: p.y, m: p.m }
+}
+
+function timesheetCalendarKbOpts(ts: NonNullable<Context['session']['timesheetCalendar']>) {
+  refreshTimesheetSelectionAnchorMonth(ts)
+  const dayTiersByKey: Record<string, 1 | 2> = { ...ts.lockedDayStates }
+  for (const [k, tier] of Object.entries(ts.draftDayStates))
+    dayTiersByKey[k] = tier
+  return {
+    userCustomRangeSelection: true as const,
+    dayTiersByKey,
+    userLockedSavedDayKeys: Object.keys(ts.lockedDayStates),
+    selectionAnchorMonth: ts.selectionAnchorMonth,
+    approvedFrozenDayKeys: ts.approvedFrozenDayKeys ?? [],
+  }
+}
+
 const feature = composer.chatType('private')
 
 feature.command('start', logHandle('command-start'), async (ctx) => {
@@ -113,7 +176,7 @@ feature
     'message:text',
     logHandle('salary-request-payroll'),
     async (ctx) => {
-      await cleanupPreviousPayrollFlowMessages(ctx)
+      await cleanupAllInlineCalendarFlows(ctx)
 
       const now = new Date()
       const y = now.getFullYear()
@@ -184,9 +247,45 @@ feature
     'message:text',
     logHandle('user-timesheet-fill-entered'),
     async (ctx) => {
-      return ctx.reply(ctx.t('timesheet-btn-fill'), {
-        reply_markup: await createHomeReplyKeyboard(ctx),
+      await cleanupAllInlineCalendarFlows(ctx)
+
+      const now = new Date()
+      const { y: year, m: month } = calendarDatePartsAqtobe(now)
+      const localeCode = await ctx.i18n.getLocale()
+
+      ctx.session.timesheetCalendar = {
+        calendarYear: year,
+        calendarMonth: month,
+        calendarChatId: 0,
+        calendarMessageId: 0,
+        lockedDayStates: {},
+        draftDayStates: {},
+        monthApprovalByYm: {},
+        approvedFrozenDayKeys: [],
+        pendingClearTimesheetDahForMonths: [],
+      }
+      const ts = ctx.session.timesheetCalendar
+      const sheetUser = usernameForSheetMatching(ctx)
+      if (sheetUser && ctx.config.sheetsSpreadsheetId.trim()) {
+        try {
+          await syncTimesheetSessionOnEntry(ctx, ts, sheetUser, now)
+        }
+        catch (error) {
+          ctx.logger.warn({ err: error }, 'Failed to sync timesheet session from sheets on entry')
+        }
+      }
+
+      const calMsg = await ctx.reply(ctx.t('user-request-custom-prompt'), {
+        reply_markup: createTimesheetCalendarKeyboard(ctx, year, month, localeCode, timesheetCalendarKbOpts(ts)),
       })
+      const hintMsg = await ctx.reply(ctx.t('user-request-custom-actions-hint'), {
+        reply_markup: createEmployeeUserActionsKeyboard(ctx, {}),
+      })
+      ts.calendarChatId = calMsg.chat.id
+      ts.calendarMessageId = calMsg.message_id
+      ts.actionsHintMessageId = hintMsg.message_id
+      if (ctx.chat?.id !== undefined && ctx.message?.message_id !== undefined)
+        ctx.session.timesheetFillUserMessageId = ctx.message.message_id
     },
   )
 
@@ -243,14 +342,120 @@ feature
 feature
   .filter(ctx =>
     ctx.has('message:text')
-    && Boolean(ctx.session.userCustomCalendar)
+    && Boolean(ctx.session.userCustomCalendar || ctx.session.timesheetCalendar)
     && ctx.message.text === ctx.t('employee-btn-distribute-save'),
   )
   .on(
     'message:text',
     logHandle('user-custom-calendar-save'),
     async (ctx) => {
+      const ts = ctx.session.timesheetCalendar
       const uc = ctx.session.userCustomCalendar
+
+      if (ts) {
+        const chatId = ctx.chat?.id
+        if (chatId !== undefined && ts.lastSaveAckPair) {
+          await tryDeleteChatMessage(ctx, chatId, ts.lastSaveAckPair.userMessageId)
+          await tryDeleteChatMessage(ctx, chatId, ts.lastSaveAckPair.botMessageId)
+          ts.lastSaveAckPair = undefined
+        }
+        const sheetUser = usernameForSheetMatching(ctx)
+        if (!sheetUser) {
+          return ctx.reply(ctx.t('salary-request-no-username'), {
+            reply_markup: createEmployeeUserActionsKeyboard(ctx, {}),
+          })
+        }
+        if (Object.keys(ts.draftDayStates).length === 0) {
+          return ctx.reply(ctx.t('user-calendar-save-empty-draft'), {
+            reply_markup: createEmployeeUserActionsKeyboard(ctx, {}),
+          })
+        }
+        const merged: Record<string, 1 | 2> = { ...ts.lockedDayStates, ...ts.draftDayStates }
+        const spreadsheetId = ctx.config.sheetsSpreadsheetId.trim()
+        if (!spreadsheetId) {
+          return ctx.reply(ctx.t('timesheet-save-error'), {
+            reply_markup: createEmployeeUserActionsKeyboard(ctx, {}),
+          })
+        }
+
+        const now = new Date()
+        try {
+          const jsonRow = await ensureJsonCalendarSheetRowForUsername(ctx, sheetUser)
+          const { current, next } = buildTimesheetJsonEfPayloads(merged, now)
+          await writeJsonCalendarTimesheetColumnsEF(ctx, jsonRow, current, next)
+
+          const monthsToWrite = timesheetMonthsToWriteRowsFor(merged, now)
+          const pendingOnly = [...(ts.pendingClearTimesheetDahForMonths ?? [])]
+          for (const { y, m } of pendingOnly) {
+            if (monthsToWrite.some(w => w.y === y && w.m === m))
+              continue
+            const label = monthLabelRuFromParts(y, m)
+            const row = await findTimesheetRowByMonthLabelAndUsername(ctx, label, sheetUser)
+            if (row === null) {
+              return ctx.reply(ctx.t('timesheet-save-no-row', { month: label }), {
+                reply_markup: createEmployeeUserActionsKeyboard(ctx, {}),
+              })
+            }
+            await writeTimesheetDayCellsForMonth(ctx, row, y, m, {})
+            ts.pendingClearTimesheetDahForMonths = (ts.pendingClearTimesheetDahForMonths ?? []).filter(
+              p => !(p.y === y && p.m === m),
+            )
+          }
+          for (const { y, m } of monthsToWrite) {
+            const label = monthLabelRuFromParts(y, m)
+            const row = await findTimesheetRowByMonthLabelAndUsername(ctx, label, sheetUser)
+            if (row === null) {
+              return ctx.reply(ctx.t('timesheet-save-no-row', { month: label }), {
+                reply_markup: createEmployeeUserActionsKeyboard(ctx, {}),
+              })
+            }
+            if ((ts.pendingClearTimesheetDahForMonths ?? []).some(p => p.y === y && p.m === m)) {
+              await writeTimesheetDayCellsForMonth(ctx, row, y, m, {})
+              ts.pendingClearTimesheetDahForMonths = (ts.pendingClearTimesheetDahForMonths ?? []).filter(
+                p => !(p.y === y && p.m === m),
+              )
+            }
+            await writeTimesheetDayCellsForMonth(ctx, row, y, m, merged)
+          }
+        }
+        catch (error) {
+          ctx.logger.error({ err: error, spreadsheetId }, 'Failed to save timesheet to sheets')
+          return ctx.reply(ctx.t('timesheet-save-error'), {
+            reply_markup: createEmployeeUserActionsKeyboard(ctx, {}),
+          })
+        }
+
+        ts.lockedDayStates = merged
+        ts.draftDayStates = {}
+        ts.selectionAnchorMonth = undefined
+
+        try {
+          const localeCodeAfterSave = await ctx.i18n.getLocale()
+          const kbAfterSave = createTimesheetCalendarKeyboard(
+            ctx,
+            ts.calendarYear,
+            ts.calendarMonth,
+            localeCodeAfterSave,
+            timesheetCalendarKbOpts(ts),
+          )
+          await ctx.api.editMessageReplyMarkup(
+            ts.calendarChatId,
+            ts.calendarMessageId,
+            { reply_markup: kbAfterSave },
+          )
+        }
+        catch (error) {
+          ctx.logger.warn({ err: error }, 'Failed to refresh timesheet calendar after save')
+        }
+
+        const saveOkMsg = await ctx.reply(ctx.t('user-calendar-c-save-ok'), {
+          reply_markup: createEmployeeUserActionsKeyboard(ctx, {}),
+        })
+        if (ctx.message?.message_id !== undefined)
+          ts.lastSaveAckPair = { userMessageId: ctx.message.message_id, botMessageId: saveOkMsg.message_id }
+        return saveOkMsg
+      }
+
       if (!uc)
         return
       const chatId = ctx.chat?.id
@@ -379,14 +584,61 @@ feature
 feature
   .filter(ctx =>
     ctx.has('message:text')
-    && Boolean(ctx.session.userCustomCalendar)
+    && Boolean(ctx.session.userCustomCalendar || ctx.session.timesheetCalendar)
     && ctx.message.text === ctx.t('employee-btn-distribute-reset'),
   )
   .on(
     'message:text',
     logHandle('user-custom-calendar-reset'),
     async (ctx) => {
+      const ts = ctx.session.timesheetCalendar
       const uc = ctx.session.userCustomCalendar
+
+      if (ts) {
+        const spreadsheetId = ctx.config.sheetsSpreadsheetId.trim()
+        const sheetUser = usernameForSheetMatching(ctx)
+        if (spreadsheetId && sheetUser) {
+          try {
+            const jsonRow = await findJsonCalendarSheetRowForUsername(ctx, sheetUser)
+            if (jsonRow !== null)
+              await clearJsonCalendarTimesheetColumnsEF(ctx, jsonRow)
+            await clearTimesheetDayCellsForUserCurrentAndNextMonths(ctx, sheetUser, new Date())
+          }
+          catch (error) {
+            ctx.logger.error({ err: error }, 'Failed to clear timesheet data in Google Sheets on reset')
+          }
+        }
+
+        ts.lockedDayStates = {}
+        ts.draftDayStates = {}
+        ts.selectionAnchorMonth = undefined
+        ts.monthApprovalByYm = {}
+        ts.approvedFrozenDayKeys = []
+        ts.pendingClearTimesheetDahForMonths = []
+
+        const localeCode = await ctx.i18n.getLocale()
+        const kbReset = createTimesheetCalendarKeyboard(
+          ctx,
+          ts.calendarYear,
+          ts.calendarMonth,
+          localeCode,
+          timesheetCalendarKbOpts(ts),
+        )
+        try {
+          await ctx.api.editMessageReplyMarkup(
+            ts.calendarChatId,
+            ts.calendarMessageId,
+            { reply_markup: kbReset },
+          )
+        }
+        catch (error) {
+          ctx.logger.error({ err: error }, 'Failed to reset timesheet calendar markup')
+        }
+        return ctx.reply(ctx.t('timesheet-reset-ok'), {
+          reply_markup: createEmployeeUserActionsKeyboard(ctx, {}),
+        })
+      }
+
       if (!uc)
         return
       uc.lockedSavedDayKeys = []
@@ -449,7 +701,7 @@ feature
 feature
   .filter(ctx =>
     ctx.has('message:text')
-    && Boolean(ctx.session.userCustomCalendar)
+    && Boolean(ctx.session.userCustomCalendar || ctx.session.timesheetCalendar)
     && ctx.message.text === ctx.t('employee-btn-back'),
   )
   .on(
@@ -457,6 +709,7 @@ feature
     logHandle('user-custom-calendar-exit'),
     async (ctx) => {
       ctx.session.userCustomCalendar = undefined
+      ctx.session.timesheetCalendar = undefined
       return ctx.reply(ctx.t('welcome'), {
         reply_markup: await createHomeReplyKeyboard(ctx),
       })
@@ -555,6 +808,101 @@ feature.callbackQuery(
     }
     catch (error) {
       ctx.logger.error({ err: error }, 'Failed to edit payroll calendar markup')
+    }
+    await ctx.answerCallbackQuery()
+  },
+)
+
+feature.callbackQuery(
+  timesheetCalendarData.filter(),
+  logHandle('timesheet-calendar'),
+  async (ctx) => {
+    const { a, m, y, d } = timesheetCalendarData.unpack(ctx.callbackQuery.data)
+    const localeCode = await ctx.i18n.getLocale()
+    const now = new Date()
+    const min = minCalendarMonth(now)
+    const max = maxCalendarMonth(now)
+    const ts = ctx.session.timesheetCalendar
+    const msgId = ctx.callbackQuery.message?.message_id
+    const isTimesheetCalendar = Boolean(ts && msgId !== undefined && msgId === ts.calendarMessageId)
+
+    if (a === 'd' && d > 0) {
+      if (isTimesheetCalendar && ts) {
+        if (!isTimesheetDaySelectableAqtobe(y, m, d)) {
+          await ctx.answerCallbackQuery()
+          return
+        }
+        refreshTimesheetSelectionAnchorMonth(ts)
+        if (ts.selectionAnchorMonth !== undefined
+          && (y !== ts.selectionAnchorMonth.y || m !== ts.selectionAnchorMonth.m)) {
+          await ctx.answerCallbackQuery()
+          return
+        }
+        const key = `${y}-${m}-${d}`
+        if (Object.hasOwn(ts.lockedDayStates, key)) {
+          await ctx.answerCallbackQuery()
+          return
+        }
+        const cur = ts.draftDayStates[key]
+        const nextDraft = { ...ts.draftDayStates }
+        if (cur === undefined)
+          nextDraft[key] = 1
+        else if (cur === 1)
+          nextDraft[key] = 2
+        else
+          delete nextDraft[key]
+        ts.draftDayStates = nextDraft
+        refreshTimesheetSelectionAnchorMonth(ts)
+
+        ts.calendarYear = y
+        ts.calendarMonth = m
+
+        const kb = createTimesheetCalendarKeyboard(ctx, y, m, localeCode, timesheetCalendarKbOpts(ts))
+        try {
+          await ctx.editMessageReplyMarkup({ reply_markup: kb })
+        }
+        catch (error) {
+          ctx.logger.error({ err: error }, 'Failed to edit timesheet calendar after day click')
+        }
+        await ctx.answerCallbackQuery()
+        return
+      }
+
+      await ctx.answerCallbackQuery()
+      return
+    }
+
+    if (a === 'x') {
+      await ctx.answerCallbackQuery({
+        show_alert: true,
+        text: ctx.t('user-calendar-settled-day-alert'),
+      })
+      return
+    }
+
+    if (a !== 'p' && a !== 'n') {
+      await ctx.answerCallbackQuery()
+      return
+    }
+
+    const dir: -1 | 1 = a === 'p' ? -1 : 1
+    const { y: ny, m: nm } = navigateMonth(y, m, dir, min, max)
+
+    let kb
+    if (isTimesheetCalendar && ts) {
+      ts.calendarYear = ny
+      ts.calendarMonth = nm
+      kb = createTimesheetCalendarKeyboard(ctx, ny, nm, localeCode, timesheetCalendarKbOpts(ts))
+    }
+    else {
+      kb = createTimesheetCalendarKeyboard(ctx, ny, nm, localeCode)
+    }
+
+    try {
+      await ctx.editMessageReplyMarkup({ reply_markup: kb })
+    }
+    catch (error) {
+      ctx.logger.error({ err: error }, 'Failed to edit timesheet calendar markup')
     }
     await ctx.answerCallbackQuery()
   },

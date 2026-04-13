@@ -80,3 +80,25 @@ export function navigateMonth(
   const next = addMonths(y, m, direction)
   return clampMonth(next.y, next.m, min, max)
 }
+
+/** Табель: только текущий и следующий календарный месяц (Asia/Aqtobe). */
+export function timesheetCalendarMinMaxMonth(now: Date = new Date()): {
+  min: { y: number, m: number }
+  max: { y: number, m: number }
+} {
+  const { y, m } = calendarDatePartsAqtobe(now)
+  const max = addMonths(y, m, 1)
+  return { min: { y, m }, max }
+}
+
+/** День табеля: кликабелен только в двух месяцах {@link timesheetCalendarMinMaxMonth} (по календарю ячейки, не по «сегодня»). */
+export function isTimesheetDaySelectableAqtobe(
+  year: number,
+  month0: number,
+  _day: number,
+  now: Date = new Date(),
+): boolean {
+  const { min, max } = timesheetCalendarMinMaxMonth(now)
+  const cellMonth = { y: year, m: month0 }
+  return monthCmp(cellMonth, min) >= 0 && monthCmp(cellMonth, max) <= 0
+}
