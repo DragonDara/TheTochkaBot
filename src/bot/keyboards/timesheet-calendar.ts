@@ -1,6 +1,7 @@
 import type { Context } from '#root/bot/context.js'
 import { timesheetCalendarData } from '#root/bot/callback-data/timesheet-calendar.js'
 import { isTimesheetDaySelectableAqtobe } from '#root/bot/helpers/payroll-calendar-bounds.js'
+import { parseTimesheetDayKey, timesheetYmKey } from '#root/bot/helpers/timesheet-sheet.js'
 import { InlineKeyboard } from 'grammy'
 
 const ZWSP = '\u200B'
@@ -40,6 +41,31 @@ function packCb(action: string, year: number, month: number, day: number): strin
   return timesheetCalendarData.pack({ a: action, m: month, y: year, d: day })
 }
 
+/** Месяцы (ключ timesheetYmKey), где есть хотя бы один день из одобренного табеля. */
+function ymKeysWithApprovedFrozen(frozen: Set<string>): Set<string> {
+  const months = new Set<string>()
+  for (const k of frozen) {
+    const p = parseTimesheetDayKey(k)
+    if (p)
+      months.add(timesheetYmKey(p.y, p.m))
+  }
+  return months
+}
+
+function labelForTimesheetDayCell(
+  dayCounter: number,
+  k: string,
+  tiers: Record<string, 1 | 2>,
+  approvedFrozen: Set<string>,
+): string {
+  const tier = tiers[k]
+  if (approvedFrozen.has(k) && tier !== undefined)
+    return tier === 1 ? '\u2714\uFE0F' : '\u2611\uFE0F'
+  if (tier !== undefined)
+    return tierEmoji(tier)
+  return String(dayCounter)
+}
+
 function dayLabelAndAction(
   dayCounter: number,
   k: string,
@@ -69,6 +95,7 @@ export function createTimesheetCalendarKeyboard(
   const userLockedSaved = toSet(options?.userLockedSavedDayKeys)
   const anchor = options?.selectionAnchorMonth
   const approvedFrozen = toSet(options?.approvedFrozenDayKeys)
+  const monthsWithApprovedFrozen = ymKeysWithApprovedFrozen(approvedFrozen)
 
   const kb = new InlineKeyboard()
 
@@ -105,22 +132,30 @@ export function createTimesheetCalendarKeyboard(
     else {
       const k = `${year}-${month}-${dayCounter}`
       if (userCustomRangeSelection) {
-        const selectable = isTimesheetDaySelectableAqtobe(year, month, dayCounter)
-          && (anchor === undefined || (year === anchor.y && month === anchor.m))
-        if (!selectable) {
-          label = String(dayCounter)
-          cb = packCb('x', year, month, dayCounter)
+        const monthYm = timesheetYmKey(year, month)
+        const monthBlockedByApproval = monthsWithApprovedFrozen.has(monthYm)
+        if (monthBlockedByApproval) {
+          label = labelForTimesheetDayCell(dayCounter, k, tiers, approvedFrozen)
+          cb = packCb('r', year, month, dayCounter)
         }
         else {
-          const { label: l, action: act } = dayLabelAndAction(
-            dayCounter,
-            k,
-            tiers,
-            userLockedSaved,
-            approvedFrozen,
-          )
-          label = l
-          cb = packCb(act, year, month, dayCounter)
+          const selectable = isTimesheetDaySelectableAqtobe(year, month, dayCounter)
+            && (anchor === undefined || (year === anchor.y && month === anchor.m))
+          if (!selectable) {
+            label = String(dayCounter)
+            cb = packCb('x', year, month, dayCounter)
+          }
+          else {
+            const { label: l, action: act } = dayLabelAndAction(
+              dayCounter,
+              k,
+              tiers,
+              userLockedSaved,
+              approvedFrozen,
+            )
+            label = l
+            cb = packCb(act, year, month, dayCounter)
+          }
         }
       }
       else {

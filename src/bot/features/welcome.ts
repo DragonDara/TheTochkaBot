@@ -23,6 +23,7 @@ import {
   maxCalendarMonth,
   minCalendarMonth,
   navigateMonth,
+  timesheetCalendarMinMaxMonth,
 } from '#root/bot/helpers/payroll-calendar-bounds.js'
 import {
   clearUserCalendarColumnC,
@@ -36,15 +37,18 @@ import {
 import { findUsersPayrollRowByUsername } from '#root/bot/helpers/payroll-users-sheet.js'
 import { usernameForSheetMatching } from '#root/bot/helpers/telegram-usernames.js'
 import {
-  clearJsonCalendarTimesheetColumnsEF,
+  EMPTY_TIMESHEET_MONTH_JSON,
+  readJsonCalendarTimesheetColumnsEF,
   writeJsonCalendarTimesheetColumnsEF,
 } from '#root/bot/helpers/timesheet-json-calendar.js'
 import { syncTimesheetSessionOnEntry } from '#root/bot/helpers/timesheet-session-sync.js'
 import {
   buildTimesheetJsonEfPayloads,
-  clearTimesheetDayCellsForUserCurrentAndNextMonths,
   findTimesheetRowByMonthLabelAndUsername,
+  parseTimesheetDayKey,
+  stripMonthKeysFromTimesheetPayload,
   timesheetMonthsToWriteRowsFor,
+  timesheetYmKey,
   writeTimesheetDayCellsForMonth,
 } from '#root/bot/helpers/timesheet-sheet.js'
 import { createEmployeeUserActionsKeyboard } from '#root/bot/keyboards/employee-reply.js'
@@ -595,26 +599,85 @@ feature
       const uc = ctx.session.userCustomCalendar
 
       if (ts) {
+        const nowReset = new Date()
+        const { min: minM, max: maxM } = timesheetCalendarMinMaxMonth(nowReset)
+        const ymApproved = (y: number, m: number) =>
+          ts.monthApprovalByYm?.[timesheetYmKey(y, m)] === 'approved'
+        const minAp = ymApproved(minM.y, minM.m)
+        const maxAp = ymApproved(maxM.y, maxM.m)
+
+        if (minAp && maxAp) {
+          ts.draftDayStates = {}
+          ts.selectionAnchorMonth = undefined
+          const localeCodeBlocked = await ctx.i18n.getLocale()
+          try {
+            await ctx.api.editMessageReplyMarkup(
+              ts.calendarChatId,
+              ts.calendarMessageId,
+              {
+                reply_markup: createTimesheetCalendarKeyboard(
+                  ctx,
+                  ts.calendarYear,
+                  ts.calendarMonth,
+                  localeCodeBlocked,
+                  timesheetCalendarKbOpts(ts),
+                ),
+              },
+            )
+          }
+          catch (error) {
+            ctx.logger.error({ err: error }, 'Failed to refresh timesheet calendar after blocked reset')
+          }
+          return ctx.reply(ctx.t('timesheet-reset-blocked-approved'), {
+            reply_markup: createEmployeeUserActionsKeyboard(ctx, {}),
+          })
+        }
+
         const spreadsheetId = ctx.config.sheetsSpreadsheetId.trim()
         const sheetUser = usernameForSheetMatching(ctx)
         if (spreadsheetId && sheetUser) {
           try {
             const jsonRow = await findJsonCalendarSheetRowForUsername(ctx, sheetUser)
-            if (jsonRow !== null)
-              await clearJsonCalendarTimesheetColumnsEF(ctx, jsonRow)
-            await clearTimesheetDayCellsForUserCurrentAndNextMonths(ctx, sheetUser, new Date())
+            if (jsonRow !== null) {
+              const read = await readJsonCalendarTimesheetColumnsEF(ctx, jsonRow)
+              let current = read?.current ?? { ...EMPTY_TIMESHEET_MONTH_JSON }
+              let next = read?.next ?? { ...EMPTY_TIMESHEET_MONTH_JSON }
+              if (!minAp)
+                current = stripMonthKeysFromTimesheetPayload(current, minM.y, minM.m)
+              if (!maxAp)
+                next = stripMonthKeysFromTimesheetPayload(next, maxM.y, maxM.m)
+              await writeJsonCalendarTimesheetColumnsEF(ctx, jsonRow, current, next)
+            }
+            for (const { y, m } of [minM, maxM]) {
+              if (ymApproved(y, m))
+                continue
+              const label = monthLabelRuFromParts(y, m)
+              const row = await findTimesheetRowByMonthLabelAndUsername(ctx, label, sheetUser)
+              if (row !== null)
+                await writeTimesheetDayCellsForMonth(ctx, row, y, m, {})
+            }
           }
           catch (error) {
             ctx.logger.error({ err: error }, 'Failed to clear timesheet data in Google Sheets on reset')
           }
         }
 
-        ts.lockedDayStates = {}
+        const nextLocked: Record<string, 1 | 2> = {}
+        for (const [k, tier] of Object.entries(ts.lockedDayStates)) {
+          const p = parseTimesheetDayKey(k)
+          if (p && ymApproved(p.y, p.m))
+            nextLocked[k] = tier
+        }
+        ts.lockedDayStates = nextLocked
         ts.draftDayStates = {}
         ts.selectionAnchorMonth = undefined
-        ts.monthApprovalByYm = {}
-        ts.approvedFrozenDayKeys = []
-        ts.pendingClearTimesheetDahForMonths = []
+        ts.pendingClearTimesheetDahForMonths = (ts.pendingClearTimesheetDahForMonths ?? []).filter(
+          p => !ymApproved(p.y, p.m),
+        )
+        if (!minAp && !maxAp) {
+          ts.monthApprovalByYm = {}
+          ts.approvedFrozenDayKeys = []
+        }
 
         const localeCode = await ctx.i18n.getLocale()
         const kbReset = createTimesheetCalendarKeyboard(
@@ -869,6 +932,14 @@ feature.callbackQuery(
       }
 
       await ctx.answerCallbackQuery()
+      return
+    }
+
+    if (a === 'r' && d > 0) {
+      await ctx.answerCallbackQuery({
+        show_alert: true,
+        text: ctx.t('timesheet-month-already-approved-alert'),
+      })
       return
     }
 
