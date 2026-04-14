@@ -36,7 +36,7 @@ const DEFAULT_JSON_CALENDAR_SHEET = 'JSON Calendar'
 const DEFAULT_JSON_CALENDAR_START_ROW = 2
 
 /**
- * Лист и первая строка данных для JSON календаря (колонки A–D: A id, B сотрудник, C пользователь, D решение по выплате).
+ * Лист и первая строка данных для JSON календаря (A–E: A username, B сотрудник, C запрос, D выплата, E черновик табеля).
  * Не подставляет лист Users: при пустом range, без `!` или если в range указан лист Users — используется «JSON Calendar».
  */
 export function resolveJsonCalendarSheetLocation(range: string): { sheetName: string, startRow: number } {
