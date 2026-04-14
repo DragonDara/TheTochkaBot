@@ -204,7 +204,7 @@ function paymentHistoryBSliceRowLooksLikeData(row: string[] | undefined): boolea
   return row.some(c => String(c ?? '').trim() !== '')
 }
 
-function parseSheetNumericCell(s: string | undefined): number | null {
+export function parseSheetNumericCell(s: string | undefined): number | null {
   const raw = String(s ?? '').trim()
   if (raw === '')
     return null

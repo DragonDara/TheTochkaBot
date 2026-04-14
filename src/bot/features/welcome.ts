@@ -1,4 +1,5 @@
 import type { Context } from '#root/bot/context.js'
+import type { TimesheetTier } from '#root/bot/helpers/timesheet-sheet.js'
 import { payrollCalendarData } from '#root/bot/callback-data/payroll-calendar.js'
 import { timesheetCalendarData } from '#root/bot/callback-data/timesheet-calendar.js'
 import { GREETING_CONVERSATION } from '#root/bot/conversations/greeting.js'
@@ -39,19 +40,20 @@ import {
 } from '#root/bot/helpers/payroll-user-calendar-d.js'
 import { findUsersPayrollRowByUsername } from '#root/bot/helpers/payroll-users-sheet.js'
 import { usernameForSheetMatching } from '#root/bot/helpers/telegram-usernames.js'
-import {
-  EMPTY_TIMESHEET_MONTH_JSON,
-  readJsonCalendarTimesheetColumnsEF,
-  writeJsonCalendarTimesheetColumnsEF,
-} from '#root/bot/helpers/timesheet-json-calendar.js'
 import { syncTimesheetSessionOnEntry } from '#root/bot/helpers/timesheet-session-sync.js'
 import {
-  buildTimesheetJsonEfPayloads,
+  advanceTimesheetDraftTier,
+  buildTimesheetJsonEPayload,
+  EMPTY_TIMESHEET_MONTH_JSON,
   findTimesheetRowByMonthLabelAndUsername,
   parseTimesheetDayKey,
+  readJsonCalendarTimesheetColumnE,
   stripMonthKeysFromTimesheetPayload,
   timesheetMonthsToWriteRowsFor,
+  timesheetShiftModeFromPosition,
   timesheetYmKey,
+  writeJsonCalendarTimesheetColumnE,
+  writeTimesheetAjMonthTotalForUserRow,
   writeTimesheetDayCellsForMonth,
 } from '#root/bot/helpers/timesheet-sheet.js'
 import { createEmployeeUserActionsKeyboard } from '#root/bot/keyboards/employee-reply.js'
@@ -138,7 +140,7 @@ function refreshTimesheetSelectionAnchorMonth(ts: NonNullable<Context['session']
     ts.selectionAnchorMonth = undefined
     return
   }
-  /** Якорь только при активном черновике: после «Сохранить» черновик пуст — снова можно отмечать любой из двух месяцев (Aqtobe). */
+  /** Якорь только при активном черновике: после «Сохранить» черновик пуст — снова без привязки к месяцу внутри текущего окна. */
   if (!hasDraft) {
     ts.selectionAnchorMonth = undefined
     return
@@ -153,7 +155,7 @@ function refreshTimesheetSelectionAnchorMonth(ts: NonNullable<Context['session']
 
 function timesheetCalendarKbOpts(ts: NonNullable<Context['session']['timesheetCalendar']>) {
   refreshTimesheetSelectionAnchorMonth(ts)
-  const dayTiersByKey: Record<string, 1 | 2> = { ...ts.lockedDayStates }
+  const dayTiersByKey: Record<string, TimesheetTier> = { ...ts.lockedDayStates }
   for (const [k, tier] of Object.entries(ts.draftDayStates))
     dayTiersByKey[k] = tier
   return {
@@ -275,6 +277,7 @@ feature
         calendarMessageId: 0,
         lockedDayStates: {},
         draftDayStates: {},
+        timesheetShiftMode: 'default',
         monthApprovalByYm: {},
         approvedFrozenDayKeys: [],
         pendingClearTimesheetDahForMonths: [],
@@ -283,6 +286,9 @@ feature
       const sheetUser = usernameForSheetMatching(ctx)
       if (sheetUser && ctx.config.sheetsSpreadsheetId.trim()) {
         try {
+          const usersHit = await findUsersPayrollRowByUsername(ctx, sheetUser)
+          const positionCell = String(usersHit?.row[6] ?? '').trim()
+          ts.timesheetShiftMode = timesheetShiftModeFromPosition(positionCell)
           await syncTimesheetSessionOnEntry(ctx, ts, sheetUser, now)
         }
         catch (error) {
@@ -385,7 +391,7 @@ feature
             reply_markup: createEmployeeUserActionsKeyboard(ctx, {}),
           })
         }
-        const merged: Record<string, 1 | 2> = { ...ts.lockedDayStates, ...ts.draftDayStates }
+        const merged: Record<string, TimesheetTier> = { ...ts.lockedDayStates, ...ts.draftDayStates }
         const spreadsheetId = ctx.config.sheetsSpreadsheetId.trim()
         if (!spreadsheetId) {
           return ctx.reply(ctx.t('timesheet-save-error'), {
@@ -397,8 +403,8 @@ feature
         const monthsToWrite = timesheetMonthsToWriteRowsFor(merged, now)
         try {
           const jsonRow = await ensureJsonCalendarSheetRowForUsername(ctx, sheetUser)
-          const { current, next } = buildTimesheetJsonEfPayloads(merged, now)
-          await writeJsonCalendarTimesheetColumnsEF(ctx, jsonRow, current, next)
+          const ePayload = buildTimesheetJsonEPayload(merged, now)
+          await writeJsonCalendarTimesheetColumnE(ctx, jsonRow, ePayload)
 
           const pendingOnly = [...(ts.pendingClearTimesheetDahForMonths ?? [])]
           for (const { y, m } of pendingOnly) {
@@ -412,6 +418,7 @@ feature
               })
             }
             await writeTimesheetDayCellsForMonth(ctx, row, y, m, {})
+            await writeTimesheetAjMonthTotalForUserRow(ctx, row, y, m, {}, sheetUser)
             ts.pendingClearTimesheetDahForMonths = (ts.pendingClearTimesheetDahForMonths ?? []).filter(
               p => !(p.y === y && p.m === m),
             )
@@ -431,6 +438,7 @@ feature
               )
             }
             await writeTimesheetDayCellsForMonth(ctx, row, y, m, merged)
+            await writeTimesheetAjMonthTotalForUserRow(ctx, row, y, m, merged, sheetUser)
           }
         }
         catch (error) {
@@ -640,13 +648,12 @@ feature
 
       if (ts) {
         const nowReset = new Date()
-        const { min: minM, max: maxM } = timesheetCalendarMinMaxMonth(nowReset)
+        const { min: minM } = timesheetCalendarMinMaxMonth(nowReset)
         const ymApproved = (y: number, m: number) =>
           ts.monthApprovalByYm?.[timesheetYmKey(y, m)] === 'approved'
         const minAp = ymApproved(minM.y, minM.m)
-        const maxAp = ymApproved(maxM.y, maxM.m)
 
-        if (minAp && maxAp) {
+        if (minAp) {
           ts.draftDayStates = {}
           ts.selectionAnchorMonth = undefined
           const localeCodeBlocked = await ctx.i18n.getLocale()
@@ -679,22 +686,19 @@ feature
           try {
             const jsonRow = await findJsonCalendarSheetRowForUsername(ctx, sheetUser)
             if (jsonRow !== null) {
-              const read = await readJsonCalendarTimesheetColumnsEF(ctx, jsonRow)
-              let current = read?.current ?? { ...EMPTY_TIMESHEET_MONTH_JSON }
-              let next = read?.next ?? { ...EMPTY_TIMESHEET_MONTH_JSON }
+              const read = await readJsonCalendarTimesheetColumnE(ctx, jsonRow)
+              let current = read ?? { ...EMPTY_TIMESHEET_MONTH_JSON }
               if (!minAp)
                 current = stripMonthKeysFromTimesheetPayload(current, minM.y, minM.m)
-              if (!maxAp)
-                next = stripMonthKeysFromTimesheetPayload(next, maxM.y, maxM.m)
-              await writeJsonCalendarTimesheetColumnsEF(ctx, jsonRow, current, next)
+              await writeJsonCalendarTimesheetColumnE(ctx, jsonRow, current)
             }
-            for (const { y, m } of [minM, maxM]) {
-              if (ymApproved(y, m))
-                continue
-              const label = monthLabelRuFromParts(y, m)
+            if (!minAp) {
+              const label = monthLabelRuFromParts(minM.y, minM.m)
               const row = await findTimesheetRowByMonthLabelAndUsername(ctx, label, sheetUser)
-              if (row !== null)
-                await writeTimesheetDayCellsForMonth(ctx, row, y, m, {})
+              if (row !== null) {
+                await writeTimesheetDayCellsForMonth(ctx, row, minM.y, minM.m, {})
+                await writeTimesheetAjMonthTotalForUserRow(ctx, row, minM.y, minM.m, {}, sheetUser)
+              }
             }
           }
           catch (error) {
@@ -702,7 +706,7 @@ feature
           }
         }
 
-        const nextLocked: Record<string, 1 | 2> = {}
+        const nextLocked: Record<string, TimesheetTier> = {}
         for (const [k, tier] of Object.entries(ts.lockedDayStates)) {
           const p = parseTimesheetDayKey(k)
           if (p && ymApproved(p.y, p.m))
@@ -714,7 +718,7 @@ feature
         ts.pendingClearTimesheetDahForMonths = (ts.pendingClearTimesheetDahForMonths ?? []).filter(
           p => !ymApproved(p.y, p.m),
         )
-        if (!minAp && !maxAp) {
+        if (!minAp) {
           ts.monthApprovalByYm = {}
           ts.approvedFrozenDayKeys = []
         }
@@ -738,7 +742,7 @@ feature
           ctx.logger.error({ err: error }, 'Failed to reset timesheet calendar markup')
         }
         try {
-          const clearedMonths = [minM, maxM].filter(({ y, m }) => !ymApproved(y, m))
+          const clearedMonths = !minAp ? [minM] : []
           const monthsLabel = clearedMonths.length > 0
             ? clearedMonths.map(({ y, m }) => monthLabelRuFromParts(y, m)).join(', ')
             : '—'
@@ -986,18 +990,24 @@ feature.callbackQuery(
           return
         }
         const key = `${y}-${m}-${d}`
-        if (Object.hasOwn(ts.lockedDayStates, key)) {
-          await ctx.answerCallbackQuery()
+        const approvedFrozen = ts.approvedFrozenDayKeys ?? []
+        if (approvedFrozen.includes(key)) {
+          await ctx.answerCallbackQuery({
+            show_alert: true,
+            text: ctx.t('timesheet-month-already-approved-alert'),
+          })
           return
         }
-        const cur = ts.draftDayStates[key]
+        const cur
+          = ts.draftDayStates[key] !== undefined
+            ? ts.draftDayStates[key]
+            : ts.lockedDayStates[key]
+        const nextTier = advanceTimesheetDraftTier(cur, ts.timesheetShiftMode)
         const nextDraft = { ...ts.draftDayStates }
-        if (cur === undefined)
-          nextDraft[key] = 1
-        else if (cur === 1)
-          nextDraft[key] = 2
-        else
+        if (nextTier === undefined)
           delete nextDraft[key]
+        else
+          nextDraft[key] = nextTier
         ts.draftDayStates = nextDraft
         refreshTimesheetSelectionAnchorMonth(ts)
 

@@ -1,4 +1,5 @@
 import type { PayrollSettlementColumnD } from '#root/bot/helpers/payroll-user-calendar-d.js'
+import type { TimesheetShiftMode, TimesheetTier } from '#root/bot/helpers/timesheet-sheet.js'
 import type { Config } from '#root/config.js'
 import type { Logger } from '#root/logger.js'
 import type { SheetsRepo } from '#root/repos/sheets-repo.js'
@@ -34,7 +35,7 @@ export interface SessionData {
     /** Решение сотрудника по последнему запросу (лист JSON Calendar, колонка D). */
     payrollSettlement?: PayrollSettlementColumnD
   }
-  /** Поток «Заполнить табель»: лист Timesheet (D:AH) и JSON Calendar E/F; не Payment History. */
+  /** Поток «Заполнить табель»: лист Timesheet (D:AH) и JSON Calendar E; не Payment History. */
   timesheetCalendar?: {
     calendarYear: number
     calendarMonth: number
@@ -42,15 +43,17 @@ export interface SessionData {
     calendarMessageId: number
     actionsHintMessageId?: number
     lastSaveAckPair?: { userMessageId: number, botMessageId: number }
-    /** Сохранённые дни: 1 — жёлтый, 2 — синий; до «Сбросить» без клика. */
-    lockedDayStates: Record<string, 1 | 2>
-    /** Черновик: число → жёлтый → синий → число. */
-    draftDayStates: Record<string, 1 | 2>
+    /** Сохранённые дни: 1 — дневная, 2 — вечерняя, 3 — обе (Повар); до «Сбросить» без клика. */
+    lockedDayStates: Record<string, TimesheetTier>
+    /** Черновик: цикл по клику зависит от должности (`timesheetShiftMode`). */
+    draftDayStates: Record<string, TimesheetTier>
+    /** Правила смен по должности (лист Users, G). */
+    timesheetShiftMode: TimesheetShiftMode
     /** Пока есть черновик — только этот календарный месяц; после сохранения сбрасывается. */
     selectionAnchorMonth?: { y: number, m: number }
-    /** Статус AI на листе Timesheet для текущего/следующего месяца (Asia/Aqtobe), ключ `y-m`. */
+    /** Статус AI на листе Timesheet для текущего месяца (Asia/Aqtobe), ключ `y-m`. */
     monthApprovalByYm?: Record<string, 'approved' | 'rejected' | 'none'>
-    /** Дни, уже попавшие в одобренный табель при входе (из E/F): только они — ✔️/☑️; новые отметки — 🟡/🔵. */
+    /** Дни, уже попавшие в одобренный табель при входе (из E): только они — ✔️/☑️; новые отметки — 🟡/🔵. */
     approvedFrozenDayKeys?: string[]
     /** После «Не одобрен»: очистить D:AH при следующем успешном сохранении табеля. */
     pendingClearTimesheetDahForMonths?: { y: number, m: number }[]

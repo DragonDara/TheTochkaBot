@@ -22,7 +22,7 @@ export function isUsersSheetAccountantRow(row: string[]): boolean {
 }
 
 /**
- * Фактический диапазон чтения Users: **A–H** (username, ФИО, …, D/E для суммы, G — должность, H — роль).
+ * Фактический диапазон чтения Users: **A–H** (username, ФИО, …, D/E для запроса зарплаты, **E/F** — ставки дневной/вечерней смены для табеля AJ, G — должность, H — роль).
  * Хвост диапазона из env не расширяет чтение за H.
  */
 export function usersPayrollSheetDataRange(ctx: Context): string | null {

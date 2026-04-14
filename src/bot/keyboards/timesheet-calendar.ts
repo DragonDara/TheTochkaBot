@@ -1,13 +1,17 @@
 import type { Context } from '#root/bot/context.js'
+import type { TimesheetTier } from '#root/bot/helpers/timesheet-sheet.js'
 import { timesheetCalendarData } from '#root/bot/callback-data/timesheet-calendar.js'
 import { isTimesheetDaySelectableAqtobe } from '#root/bot/helpers/payroll-calendar-bounds.js'
-import { parseTimesheetDayKey, timesheetYmKey } from '#root/bot/helpers/timesheet-sheet.js'
 import { InlineKeyboard } from 'grammy'
 
 const ZWSP = '\u200B'
 
-function tierEmoji(tier: 1 | 2): string {
-  return tier === 1 ? '\u{1F7E1}' : '\u{1F535}'
+function tierEmoji(tier: TimesheetTier): string {
+  if (tier === 1)
+    return '\u{1F7E1}'
+  if (tier === 2)
+    return '\u{1F535}'
+  return '\u{1F7E0}'
 }
 
 function toSet(keys?: Iterable<string> | string[]): Set<string> {
@@ -19,11 +23,11 @@ function toSet(keys?: Iterable<string> | string[]): Set<string> {
 export interface TimesheetCalendarOptions {
   /** Табель: день переключается по клику (число ↔ уровни). */
   userCustomRangeSelection?: boolean
-  /** Уровень отметки по ключу дня: 1 — жёлтый, 2 — синий. */
-  dayTiersByKey?: Record<string, 1 | 2>
-  /** Ключи уже сохранённых дней — кнопки без callback «d». */
+  /** Уровень отметки по ключу дня: 1 — жёлтый, 2 — синий, 3 — обе смены (оранжевый). */
+  dayTiersByKey?: Record<string, TimesheetTier>
+  /** Ключи уже сохранённых дней (черновик в `dayTiersByKey`; клики «d» для дней вне одобренного снимка). */
   userLockedSavedDayKeys?: Iterable<string> | string[]
-  /** Если задан — среди двух месяцев Aqtobe кликабелен только этот. */
+  /** Если задан — в текущем месяце Aqtobe кликабельны только дни этого календарного месяца (якорь черновика). */
   selectionAnchorMonth?: { y: number, m: number }
   /** Ключи дней из одобренного табеля при входе: ✔️/☑️ + число дня, без клика; остальные отметки — 🟡/🔵. */
   approvedFrozenDayKeys?: Iterable<string> | string[]
@@ -41,51 +45,26 @@ function packCb(action: string, year: number, month: number, day: number): strin
   return timesheetCalendarData.pack({ a: action, m: month, y: year, d: day })
 }
 
-/** Месяцы (ключ timesheetYmKey), где есть хотя бы один день из одобренного табеля. */
-function ymKeysWithApprovedFrozen(frozen: Set<string>): Set<string> {
-  const months = new Set<string>()
-  for (const k of frozen) {
-    const p = parseTimesheetDayKey(k)
-    if (p)
-      months.add(timesheetYmKey(p.y, p.m))
-  }
-  return months
-}
-
-function approvedFrozenDayLabel(tier: 1 | 2, dayCounter: number): string {
-  const mark = tier === 1 ? '\u2714\uFE0F' : '\u2611\uFE0F'
+function approvedFrozenDayLabel(tier: TimesheetTier, dayCounter: number): string {
+  const mark = tier === 1 ? '\u2714\uFE0F' : tier === 2 ? '\u2611\uFE0F' : '\u{1F518}'
   return `${mark}${dayCounter}`
-}
-
-function labelForTimesheetDayCell(
-  dayCounter: number,
-  k: string,
-  tiers: Record<string, 1 | 2>,
-  approvedFrozen: Set<string>,
-): string {
-  const tier = tiers[k]
-  if (approvedFrozen.has(k) && tier !== undefined)
-    return approvedFrozenDayLabel(tier, dayCounter)
-  if (tier !== undefined)
-    return tierEmoji(tier)
-  return String(dayCounter)
 }
 
 function dayLabelAndAction(
   dayCounter: number,
   k: string,
-  tiers: Record<string, 1 | 2>,
-  userLockedSaved: Set<string>,
+  tiers: Record<string, TimesheetTier>,
   approvedFrozen: Set<string>,
 ): { label: string, action: string } {
   const tier = tiers[k]
-  let label = tier !== undefined ? tierEmoji(tier) : String(dayCounter)
-  let action = userLockedSaved.has(k) ? 'x' : 'd'
   if (approvedFrozen.has(k) && tier !== undefined) {
-    label = approvedFrozenDayLabel(tier, dayCounter)
-    action = 'x'
+    return {
+      label: approvedFrozenDayLabel(tier, dayCounter),
+      action: 'r',
+    }
   }
-  return { label, action }
+  const label = tier !== undefined ? tierEmoji(tier) : String(dayCounter)
+  return { label, action: 'd' }
 }
 
 export function createTimesheetCalendarKeyboard(
@@ -97,12 +76,10 @@ export function createTimesheetCalendarKeyboard(
 ): InlineKeyboard {
   const userCustomRangeSelection = Boolean(options?.userCustomRangeSelection)
   const tiers = options?.dayTiersByKey ?? {}
-  const userLockedSaved = toSet(options?.userLockedSavedDayKeys)
   const anchor = options?.selectionAnchorMonth
   const approvedFrozen = toSet(options?.approvedFrozenDayKeys)
-  const monthsWithApprovedFrozen = ymKeysWithApprovedFrozen(approvedFrozen)
   const nowKb = new Date()
-  /** Месяц экрана — один из двух месяцев табеля (Aqtobe); иначе дни/шапка без эффекта по клику (callback «i»). */
+  /** Месяц экрана — редактируемый только если это текущий месяц Aqtobe; иначе дни/шапка без эффекта по клику (callback «i»). */
   const timesheetMonthOnScreen = isTimesheetDaySelectableAqtobe(year, month, 1, nowKb)
   const headerIdleCb = userCustomRangeSelection && !timesheetMonthOnScreen ? 'i' : 'x'
 
@@ -146,37 +123,28 @@ export function createTimesheetCalendarKeyboard(
     else {
       const k = `${year}-${month}-${dayCounter}`
       if (userCustomRangeSelection) {
-        const monthYm = timesheetYmKey(year, month)
-        const monthBlockedByApproval = monthsWithApprovedFrozen.has(monthYm)
-        if (monthBlockedByApproval) {
-          label = labelForTimesheetDayCell(dayCounter, k, tiers, approvedFrozen)
-          cb = packCb('r', year, month, dayCounter)
+        const selectable = isTimesheetDaySelectableAqtobe(year, month, dayCounter)
+          && (anchor === undefined || (year === anchor.y && month === anchor.m))
+        if (!selectable) {
+          label = String(dayCounter)
+          const outsideTimesheetMonths = !isTimesheetDaySelectableAqtobe(
+            year,
+            month,
+            dayCounter,
+            nowKb,
+          )
+          const cbAction = outsideTimesheetMonths ? 'i' : 'm'
+          cb = packCb(cbAction, year, month, dayCounter)
         }
         else {
-          const selectable = isTimesheetDaySelectableAqtobe(year, month, dayCounter)
-            && (anchor === undefined || (year === anchor.y && month === anchor.m))
-          if (!selectable) {
-            label = String(dayCounter)
-            const outsideTimesheetMonths = !isTimesheetDaySelectableAqtobe(
-              year,
-              month,
-              dayCounter,
-              nowKb,
-            )
-            const cbAction = outsideTimesheetMonths ? 'i' : 'm'
-            cb = packCb(cbAction, year, month, dayCounter)
-          }
-          else {
-            const { label: l, action: act } = dayLabelAndAction(
-              dayCounter,
-              k,
-              tiers,
-              userLockedSaved,
-              approvedFrozen,
-            )
-            label = l
-            cb = packCb(act, year, month, dayCounter)
-          }
+          const { label: l, action: act } = dayLabelAndAction(
+            dayCounter,
+            k,
+            tiers,
+            approvedFrozen,
+          )
+          label = l
+          cb = packCb(act, year, month, dayCounter)
         }
       }
       else {

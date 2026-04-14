@@ -1,4 +1,5 @@
 import type { Context } from '#root/bot/context.js'
+import type { TimesheetTier } from '#root/bot/helpers/timesheet-sheet.js'
 import { ensureJsonCalendarSheetRowForUsername } from '#root/bot/helpers/json-calendar-sheet.js'
 import { monthLabelRuFromParts } from '#root/bot/helpers/payment-history-sheet.js'
 import { timesheetCalendarMinMaxMonth } from '#root/bot/helpers/payroll-calendar-bounds.js'
@@ -8,22 +9,20 @@ import {
 } from '#root/bot/helpers/timesheet-approval-sheet.js'
 import {
   EMPTY_TIMESHEET_MONTH_JSON,
-  readJsonCalendarTimesheetColumnsEF,
-  writeJsonCalendarTimesheetColumnsEF,
-} from '#root/bot/helpers/timesheet-json-calendar.js'
-import {
   findTimesheetRowByMonthLabelAndUsername,
+  readJsonCalendarTimesheetColumnE,
   stripMonthKeysFromTimesheetPayload,
   tiersFromTimesheetMonthJsonBucket,
   timesheetYmKey,
+  writeJsonCalendarTimesheetColumnE,
 } from '#root/bot/helpers/timesheet-sheet.js'
 
 type TimesheetSession = NonNullable<Context['session']['timesheetCalendar']>
 
 /**
- * После «Заполнить табель»: читает AI (текущий/следующий месяц Aqtobe), E/F JSON;
- * при «Не одобрен» — сбрасывает ключи месяца в E/F и помечает очистку D:AH при следующем сохранении;
- * при «Одобрен» — ключи из E/F в locked и в approvedFrozenDayKeys (только они ✔️/☑️; новые отметки — 🟡/🔵).
+ * После «Заполнить табель»: читает AI (текущий месяц Aqtobe), JSON в E;
+ * при «Не одобрен» — сбрасывает ключи месяца в E и помечает очистку D:AH при следующем сохранении;
+ * при «Одобрен» — ключи из E в locked и approvedFrozenDayKeys (галочки в UI), новые отметки — жёлтый/синий.
  */
 export async function syncTimesheetSessionOnEntry(
   ctx: Context,
@@ -35,7 +34,7 @@ export async function syncTimesheetSessionOnEntry(
   if (!spreadsheetId)
     return
 
-  const { min, max } = timesheetCalendarMinMaxMonth(now)
+  const { min } = timesheetCalendarMinMaxMonth(now)
   ts.monthApprovalByYm = {}
   ts.approvedFrozenDayKeys = []
   ts.pendingClearTimesheetDahForMonths = []
@@ -48,81 +47,50 @@ export async function syncTimesheetSessionOnEntry(
     return
   }
 
-  const read = await readJsonCalendarTimesheetColumnsEF(ctx, jsonRow)
-  let current = read?.current ?? { ...EMPTY_TIMESHEET_MONTH_JSON }
-  let next = read?.next ?? { ...EMPTY_TIMESHEET_MONTH_JSON }
+  const read = await readJsonCalendarTimesheetColumnE(ctx, jsonRow)
+  let current = read ?? { ...EMPTY_TIMESHEET_MONTH_JSON }
 
   type Norm = 'approved' | 'rejected' | 'pending'
-  const monthStatuses: Array<{ y: number, m: number, norm: Norm }> = []
-
-  for (const { y, m } of [min, max]) {
-    const label = monthLabelRuFromParts(y, m)
-    const row = await findTimesheetRowByMonthLabelAndUsername(ctx, label, sheetUser)
-    if (row === null) {
-      monthStatuses.push({ y, m, norm: 'pending' })
-      continue
-    }
+  const label = monthLabelRuFromParts(min.y, min.m)
+  const row = await findTimesheetRowByMonthLabelAndUsername(ctx, label, sheetUser)
+  let norm: Norm = 'pending'
+  if (row !== null) {
     const ai = await readTimesheetApprovalStatusCell(ctx, row)
-    const norm = normalizeTimesheetApprovalStatusCell(ai ?? '')
-    monthStatuses.push({ y, m, norm })
+    norm = normalizeTimesheetApprovalStatusCell(ai ?? '')
   }
 
-  let efChanged = false
-  for (const { y, m, norm } of monthStatuses) {
-    if (norm !== 'rejected')
-      continue
-    const bucket = y === min.y && m === min.m ? current : next
-    const stripped = stripMonthKeysFromTimesheetPayload(bucket, y, m)
-    if (JSON.stringify(stripped) !== JSON.stringify(bucket)) {
-      if (y === min.y && m === min.m)
-        current = stripped
-      else
-        next = stripped
-      efChanged = true
-    }
-  }
-
-  if (efChanged) {
-    try {
-      await writeJsonCalendarTimesheetColumnsEF(ctx, jsonRow, current, next)
-    }
-    catch (error) {
-      ctx.logger.error({ err: error }, 'Failed to write stripped timesheet JSON E/F on entry')
-    }
-  }
-
-  const locked: Record<string, 1 | 2> = {}
-
-  for (const { y, m, norm } of monthStatuses) {
-    const ym = timesheetYmKey(y, m)
-    if (norm === 'approved') {
-      ts.monthApprovalByYm[ym] = 'approved'
-    }
-    else if (norm === 'rejected') {
-      ts.monthApprovalByYm[ym] = 'rejected'
-      const prev: { y: number, m: number }[] = ts.pendingClearTimesheetDahForMonths ?? []
-      if (!prev.some(p => p.y === y && p.m === m)) {
-        ts.pendingClearTimesheetDahForMonths = [...prev, { y, m }]
+  if (norm === 'rejected') {
+    const stripped = stripMonthKeysFromTimesheetPayload(current, min.y, min.m)
+    if (JSON.stringify(stripped) !== JSON.stringify(current)) {
+      current = stripped
+      try {
+        await writeJsonCalendarTimesheetColumnE(ctx, jsonRow, current)
       }
-      else {
-        ts.pendingClearTimesheetDahForMonths = prev
+      catch (error) {
+        ctx.logger.error({ err: error }, 'Failed to write stripped timesheet JSON E on entry')
       }
     }
-    else {
-      ts.monthApprovalByYm[ym] = 'none'
-    }
+  }
 
-    if (norm === 'rejected') {
-      continue
-    }
+  const ym = timesheetYmKey(min.y, min.m)
+  const locked: Record<string, TimesheetTier> = {}
 
-    const bucket = y === min.y && m === min.m ? current : next
-    const tiers = tiersFromTimesheetMonthJsonBucket(bucket, y, m)
+  if (norm === 'approved') {
+    ts.monthApprovalByYm[ym] = 'approved'
+  }
+  else if (norm === 'rejected') {
+    ts.monthApprovalByYm[ym] = 'rejected'
+    ts.pendingClearTimesheetDahForMonths = [{ y: min.y, m: min.m }]
+  }
+  else {
+    ts.monthApprovalByYm[ym] = 'none'
+  }
+
+  if (norm !== 'rejected') {
+    const tiers = tiersFromTimesheetMonthJsonBucket(current, min.y, min.m)
     Object.assign(locked, tiers)
     if (norm === 'approved') {
-      const prev: string[] = ts.approvedFrozenDayKeys ?? []
-      const fromTiers = Object.keys(tiers)
-      ts.approvedFrozenDayKeys = [...new Set([...prev, ...fromTiers])]
+      ts.approvedFrozenDayKeys = [...new Set(Object.keys(tiers))]
     }
   }
 
