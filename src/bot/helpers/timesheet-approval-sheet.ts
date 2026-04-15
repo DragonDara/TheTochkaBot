@@ -1,8 +1,21 @@
 import type { Context } from '#root/bot/context.js'
-import { a1SheetPrefix } from '#root/bot/helpers/json-calendar-sheet.js'
+import { a1SheetPrefix, findJsonCalendarSheetRowForUsername } from '#root/bot/helpers/json-calendar-sheet.js'
+import { parseRuMonthLabelToYearMonth0 } from '#root/bot/helpers/payment-history-sheet.js'
 import { usersPayrollPositionByNormalizedUsernameMap } from '#root/bot/helpers/payroll-users-sheet.js'
 import { normalizeTelegramUsername } from '#root/bot/helpers/telegram-usernames.js'
-import { resolveTimesheetSheetLocation } from '#root/bot/helpers/timesheet-sheet.js'
+import {
+  approvedFrozenSnapshotFromMonthKeysJson,
+  EMPTY_TIMESHEET_APPROVED_FROZEN_JSON,
+  EMPTY_TIMESHEET_MONTH_JSON,
+  mergeApprovedFrozenSnapshotReplaceMonth,
+  parseTimesheetYmKey,
+  readJsonCalendarTimesheetColumnE,
+  readJsonCalendarTimesheetColumnF,
+  resolveTimesheetSheetLocation,
+  stripMonthKeysFromApprovedFrozenSnapshot,
+  timesheetYmKey,
+  writeJsonCalendarTimesheetColumnF,
+} from '#root/bot/helpers/timesheet-sheet.js'
 
 /** A=0 … AH=33 (31 день), AI=34. */
 const COL_AI_INDEX = 34
@@ -110,6 +123,104 @@ export async function readTimesheetApprovalStatusCell(
   }
   catch {
     return null
+  }
+}
+
+/**
+ * После /start: по строкам табеля с этим ником сверяет JSON Calendar F с колонкой AI.
+ * «Одобрен» в AI (в т.ч. выставлено вручную в таблице) — снимок отметок из E на этот месяц в F;
+ * иначе — ключи этого месяца убираются из F.
+ */
+export async function reconcileJsonCalendarTimesheetColumnFWithTimesheetAiForUser(
+  ctx: Context,
+  sheetUser: string,
+): Promise<void> {
+  const spreadsheetId = ctx.config.sheetsSpreadsheetId.trim()
+  if (!spreadsheetId)
+    return
+
+  const needle = normalizeTelegramUsername(sheetUser)
+  if (!needle)
+    return
+
+  const jsonRow = await findJsonCalendarSheetRowForUsername(ctx, sheetUser)
+  if (jsonRow === null)
+    return
+
+  const ePayload = (await readJsonCalendarTimesheetColumnE(ctx, jsonRow)) ?? { ...EMPTY_TIMESHEET_MONTH_JSON }
+  let frozen = (await readJsonCalendarTimesheetColumnF(ctx, jsonRow)) ?? { ...EMPTY_TIMESHEET_APPROVED_FROZEN_JSON }
+
+  const { sheetName, startRow } = resolveTimesheetSheetLocation(ctx.config.sheetsTimesheetRange)
+  const prefix = a1SheetPrefix(sheetName)
+  let rows: string[][]
+  try {
+    rows = await ctx.sheetsRepo.readRange(
+      spreadsheetId,
+      `${prefix}!A${startRow}:AI${startRow + 4999}`,
+    )
+  }
+  catch (error) {
+    ctx.logger.warn({ err: error }, 'Failed to read Timesheet for F/AI reconcile')
+    return
+  }
+
+  /** Ключ месяца `y-m` → последний по порядку строк статус AI для этого пользователя. */
+  const normByYm = new Map<string, 'approved' | 'rejected' | 'pending'>()
+  let blockMonthLabel = ''
+  for (let i = 0; i < rows.length; i++) {
+    const sheetRowNumber = startRow + i
+    if (sheetRowNumber < 3)
+      continue
+    const row = rows[i]
+    if (!row)
+      continue
+    const a = String(row[0] ?? '').trim()
+    if (a)
+      blockMonthLabel = a
+    const monthLabel = blockMonthLabel
+    const nick = String(row[1] ?? '').trim()
+    const fio = String(row[2] ?? '').trim()
+    if (!monthLabel || !nick || !fio)
+      continue
+    if (normalizeTelegramUsername(nick) !== needle)
+      continue
+    const ymParts = parseRuMonthLabelToYearMonth0(monthLabel)
+    if (!ymParts)
+      continue
+    const statusRaw = String(row[COL_AI_INDEX] ?? '')
+    normByYm.set(timesheetYmKey(ymParts.y, ymParts.m0), normalizeTimesheetApprovalStatusCell(statusRaw))
+  }
+
+  let changed = false
+  for (const [ymKey, norm] of normByYm) {
+    const ymParsed = parseTimesheetYmKey(ymKey)
+    if (!ymParsed)
+      continue
+    const { y, m: m0 } = ymParsed
+    if (norm === 'approved') {
+      const monthSnap = approvedFrozenSnapshotFromMonthKeysJson(ePayload, y, m0)
+      const merged = mergeApprovedFrozenSnapshotReplaceMonth(frozen, monthSnap, y, m0)
+      if (JSON.stringify(merged) !== JSON.stringify(frozen)) {
+        frozen = merged
+        changed = true
+      }
+    }
+    else {
+      const stripped = stripMonthKeysFromApprovedFrozenSnapshot(frozen, y, m0)
+      if (JSON.stringify(stripped) !== JSON.stringify(frozen)) {
+        frozen = stripped
+        changed = true
+      }
+    }
+  }
+
+  if (!changed)
+    return
+  try {
+    await writeJsonCalendarTimesheetColumnF(ctx, jsonRow, frozen)
+  }
+  catch (error) {
+    ctx.logger.warn({ err: error, jsonRow }, 'Failed to write JSON Calendar F after Timesheet AI reconcile')
   }
 }
 

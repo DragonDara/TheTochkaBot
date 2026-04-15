@@ -12,7 +12,7 @@ import {
 import { logHandle } from '#root/bot/helpers/logging.js'
 import {
   appendSalaryPaymentHistoryRow,
-  computePayrollRequestAmountFromUsersRow,
+  computePayrollRequestAmountFromUsersRowTiered,
   monthKeyAndLabelFromRequestDate,
   monthLabelRuFromParts,
   periodRangeTextFromDayKeys,
@@ -22,7 +22,6 @@ import {
 } from '#root/bot/helpers/payment-history-sheet.js'
 import {
   calendarDatePartsAqtobe,
-  isCalendarDayAfterTodayAqtobe,
   isTimesheetDaySelectableAqtobe,
   maxCalendarMonth,
   minCalendarMonth,
@@ -30,29 +29,41 @@ import {
   timesheetCalendarMinMaxMonth,
 } from '#root/bot/helpers/payroll-calendar-bounds.js'
 import {
-  clearUserCalendarColumnC,
+  appendPayrollBucketsToColumnCDedupe,
+  filterUserCalendarColumnCToPaidKeysOnly,
   readUserCalendarColumnC,
   writeUserCalendarColumnC,
 } from '#root/bot/helpers/payroll-user-calendar-c.js'
+import { readUserCalendarColumnD } from '#root/bot/helpers/payroll-user-calendar-d.js'
 import {
-  clearUserCalendarColumnD,
-  readUserCalendarColumnD,
-} from '#root/bot/helpers/payroll-user-calendar-d.js'
+  clearUserCalendarColumnG,
+  emptyPayrollRequestColumnG,
+  mergePayrollLockedAndDraftColored,
+  payrollLockedKeysSet,
+  unionDayKeysFromPayrollBuckets,
+  writeUserCalendarColumnG,
+} from '#root/bot/helpers/payroll-user-calendar-g.js'
 import { findUsersPayrollRowByUsername } from '#root/bot/helpers/payroll-users-sheet.js'
 import { usernameForSheetMatching } from '#root/bot/helpers/telegram-usernames.js'
+import { reconcileJsonCalendarTimesheetColumnFWithTimesheetAiForUser } from '#root/bot/helpers/timesheet-approval-sheet.js'
 import { syncTimesheetSessionOnEntry } from '#root/bot/helpers/timesheet-session-sync.js'
 import {
   advanceTimesheetDraftTier,
   buildTimesheetJsonEPayload,
+  EMPTY_TIMESHEET_APPROVED_FROZEN_JSON,
   EMPTY_TIMESHEET_MONTH_JSON,
   findTimesheetRowByMonthLabelAndUsername,
   parseTimesheetDayKey,
+  payrollEligibleTierByKeyFromFrozenF,
   readJsonCalendarTimesheetColumnE,
+  readJsonCalendarTimesheetColumnF,
+  stripMonthKeysFromApprovedFrozenSnapshot,
   stripMonthKeysFromTimesheetPayload,
   timesheetMonthsToWriteRowsFor,
   timesheetShiftModeFromPosition,
   timesheetYmKey,
   writeJsonCalendarTimesheetColumnE,
+  writeJsonCalendarTimesheetColumnF,
   writeTimesheetAjMonthTotalForUserRow,
   writeTimesheetDayCellsForMonth,
 } from '#root/bot/helpers/timesheet-sheet.js'
@@ -124,11 +135,11 @@ function dayKeyTimeMs(key: string): number | null {
 }
 
 function userCustomCalendarKbOpts(uc: NonNullable<Context['session']['userCustomCalendar']>) {
-  const merged = [...new Set([...uc.lockedSavedDayKeys, ...uc.draftSelectedKeys])]
   return {
     userCustomRangeSelection: true as const,
-    userCustomUserDayKeys: merged,
-    userLockedSavedDayKeys: uc.lockedSavedDayKeys,
+    payrollEligibleTierByKey: uc.payrollEligibleTierByKey,
+    payrollDraftColoredKeys: uc.payrollDraftColoredKeys,
+    payrollLockedBuckets: uc.payrollLockedBuckets,
     userPayrollSettlement: uc.payrollSettlement,
   }
 }
@@ -177,6 +188,15 @@ feature.command('start', logHandle('command-start'), async (ctx) => {
     catch (error) {
       ctx.logger.warn({ err: error }, 'Failed to append user to Identification sheet')
     }
+    const sheetUser = usernameForSheetMatching(ctx)
+    if (sheetUser) {
+      try {
+        await reconcileJsonCalendarTimesheetColumnFWithTimesheetAiForUser(ctx, sheetUser)
+      }
+      catch (error) {
+        ctx.logger.warn({ err: error }, 'Failed to reconcile JSON Calendar F with Timesheet AI on /start')
+      }
+    }
   }
   return ctx.reply(ctx.t('welcome'), {
     reply_markup: await createHomeReplyKeyboard(ctx),
@@ -201,7 +221,8 @@ feature
       const localeCode = await ctx.i18n.getLocale()
 
       let jsonCalendarSheetRow: number | null = null
-      let lockedSavedDayKeys: string[] = []
+      let payrollEligibleTierByKey: Record<string, TimesheetTier> = {}
+      let payrollLockedBuckets = emptyPayrollRequestColumnG()
       let payrollSettlement = undefined as
         | NonNullable<Context['session']['userCustomCalendar']>['payrollSettlement']
         | undefined
@@ -212,11 +233,33 @@ feature
             reply_markup: await createHomeReplyKeyboard(ctx),
           })
         }
+        try {
+          await reconcileJsonCalendarTimesheetColumnFWithTimesheetAiForUser(ctx, sheetUser)
+        }
+        catch (error) {
+          ctx.logger.warn(
+            { err: error },
+            'Failed to reconcile JSON Calendar F with Timesheet AI on salary request',
+          )
+        }
         jsonCalendarSheetRow = await findJsonCalendarSheetRowForUsername(ctx, sheetUser)
         if (jsonCalendarSheetRow !== null) {
-          const fromC = await readUserCalendarColumnC(ctx, jsonCalendarSheetRow)
-          if (fromC)
-            lockedSavedDayKeys = [...new Set(fromC.userGreenDayKeys)]
+          try {
+            const fromF = await readJsonCalendarTimesheetColumnF(ctx, jsonCalendarSheetRow)
+            const frozen = fromF ?? { ...EMPTY_TIMESHEET_APPROVED_FROZEN_JSON }
+            payrollEligibleTierByKey = payrollEligibleTierByKeyFromFrozenF(frozen)
+          }
+          catch (error) {
+            ctx.logger.warn({ err: error }, 'Failed to read JSON calendar column F for payroll flow')
+          }
+          try {
+            const fromC = await readUserCalendarColumnC(ctx, jsonCalendarSheetRow)
+            if (fromC)
+              payrollLockedBuckets = fromC
+          }
+          catch (error) {
+            ctx.logger.warn({ err: error }, 'Failed to read JSON calendar column C for payroll flow')
+          }
           try {
             const fromD = await readUserCalendarColumnD(ctx, jsonCalendarSheetRow)
             payrollSettlement = fromD?.payrollSettlement
@@ -230,8 +273,9 @@ feature
       const calMsg = await ctx.reply(ctx.t('user-request-custom-prompt'), {
         reply_markup: createPayrollCalendarKeyboard(ctx, y, mon, localeCode, {
           userCustomRangeSelection: true,
-          userCustomUserDayKeys: lockedSavedDayKeys,
-          userLockedSavedDayKeys: lockedSavedDayKeys,
+          payrollEligibleTierByKey,
+          payrollDraftColoredKeys: [],
+          payrollLockedBuckets,
           userPayrollSettlement: payrollSettlement,
         }),
       })
@@ -244,8 +288,9 @@ feature
         calendarChatId: calMsg.chat.id,
         calendarMessageId: calMsg.message_id,
         actionsHintMessageId: hintMsg.message_id,
-        lockedSavedDayKeys,
-        draftSelectedKeys: [],
+        payrollEligibleTierByKey,
+        payrollLockedBuckets,
+        payrollDraftColoredKeys: [],
         jsonCalendarSheetRow,
         paymentHistorySheetRows: [],
         payrollSettlement,
@@ -286,6 +331,15 @@ feature
       const sheetUser = usernameForSheetMatching(ctx)
       if (sheetUser && ctx.config.sheetsSpreadsheetId.trim()) {
         try {
+          await reconcileJsonCalendarTimesheetColumnFWithTimesheetAiForUser(ctx, sheetUser)
+        }
+        catch (error) {
+          ctx.logger.warn(
+            { err: error },
+            'Failed to reconcile JSON Calendar F with Timesheet AI on timesheet fill',
+          )
+        }
+        try {
           const usersHit = await findUsersPayrollRowByUsername(ctx, sheetUser)
           const positionCell = String(usersHit?.row[6] ?? '').trim()
           ts.timesheetShiftMode = timesheetShiftModeFromPosition(positionCell)
@@ -324,14 +378,18 @@ feature
       if (!uc)
         return
       const weekKeys = weekDayKeysEndingYesterday(new Date())
-      const locked = new Set(uc.lockedSavedDayKeys)
-      const pick = weekKeys.filter(k => !locked.has(k))
+      const eligible = new Set(Object.keys(uc.payrollEligibleTierByKey))
+      const locked = payrollLockedKeysSet(uc.payrollLockedBuckets)
+      const paid = new Set(
+        uc.payrollSettlement?.kind === 'approved' ? uc.payrollSettlement.paidGreenKeys : [],
+      )
+      const pick = weekKeys.filter(k => eligible.has(k) && !locked.has(k) && !paid.has(k))
       if (pick.length === 0) {
         return ctx.reply(ctx.t('user-calendar-week-no-free-days'), {
           reply_markup: createEmployeeUserActionsKeyboard(ctx, { includeWeekRequest: true }),
         })
       }
-      uc.draftSelectedKeys = pick
+      uc.payrollDraftColoredKeys = pick
       const sorted = [...pick].sort((a, b) => (dayKeyTimeMs(a) ?? 0) - (dayKeyTimeMs(b) ?? 0))
       const first = sorted[0]!
       const p = parseDayKey(first)
@@ -509,34 +567,45 @@ feature
           reply_markup: createEmployeeUserActionsKeyboard(ctx, { includeWeekRequest: true }),
         })
       }
-      if (uc.draftSelectedKeys.length === 0) {
+      if (uc.payrollDraftColoredKeys.length === 0) {
         return ctx.reply(ctx.t('user-calendar-save-empty-draft'), {
           reply_markup: createEmployeeUserActionsKeyboard(ctx, { includeWeekRequest: true }),
         })
       }
-      const draftKeys = uc.draftSelectedKeys
-      const greenCount = draftKeys.length
-      const allLockedAfterSave = [...new Set([...uc.lockedSavedDayKeys, ...draftKeys])]
-      const userGreenAll = allLockedAfterSave
+      const draftOnlyBuckets = mergePayrollLockedAndDraftColored(
+        emptyPayrollRequestColumnG(),
+        uc.payrollDraftColoredKeys,
+        uc.payrollEligibleTierByKey,
+      )
+      const ny = draftOnlyBuckets.yellowKeys.length
+      const nb = draftOnlyBuckets.blueKeys.length
+      const no = draftOnlyBuckets.orangeKeys.length
+      const periodKeys = unionDayKeysFromPayrollBuckets(draftOnlyBuckets)
+      const mergedBuckets = mergePayrollLockedAndDraftColored(
+        uc.payrollLockedBuckets,
+        uc.payrollDraftColoredKeys,
+        uc.payrollEligibleTierByKey,
+      )
       const spreadsheetId = ctx.config.sheetsSpreadsheetId.trim()
+      let lockedAfterSave = mergedBuckets
       try {
         let row = uc.jsonCalendarSheetRow
         if (row == null)
           row = await ensureJsonCalendarSheetRowForUsername(ctx, sheetUser)
-        await writeUserCalendarColumnC(ctx, row, {
-          userGreenDayKeys: userGreenAll,
-        })
+        await writeUserCalendarColumnG(ctx, row, mergedBuckets)
         uc.jsonCalendarSheetRow = row
         try {
-          await clearUserCalendarColumnD(ctx, row)
+          const curC = await readUserCalendarColumnC(ctx, row)
+          const newC = appendPayrollBucketsToColumnCDedupe(curC, mergedBuckets)
+          await writeUserCalendarColumnC(ctx, row, newC)
+          lockedAfterSave = newC
         }
         catch (error) {
-          ctx.logger.warn({ err: error, row }, 'Failed to clear JSON calendar column D after new save')
+          ctx.logger.warn({ err: error, row }, 'Failed to append JSON calendar column C after payroll save')
         }
-        uc.payrollSettlement = undefined
       }
       catch (error) {
-        ctx.logger.error({ err: error, row: uc.jsonCalendarSheetRow }, 'Failed to save user calendar column C')
+        ctx.logger.error({ err: error, row: uc.jsonCalendarSheetRow }, 'Failed to save user calendar column G')
         return ctx.reply(ctx.t('user-calendar-c-save-error'), {
           reply_markup: createEmployeeUserActionsKeyboard(ctx, { includeWeekRequest: true }),
         })
@@ -553,17 +622,21 @@ feature
       }
 
       if (usersPayrollHit && spreadsheetId) {
-        const requestedAmount = computePayrollRequestAmountFromUsersRow(usersPayrollHit.row, greenCount)
+        const requestedAmount = computePayrollRequestAmountFromUsersRowTiered(
+          usersPayrollHit.row,
+          ny,
+          nb,
+          no,
+        )
         if (requestedAmount === null) {
           ctx.logger.warn(
-            { row: usersPayrollHit.rowNumber, greenCount },
-            'Users D/E invalid or D=0 — cannot compute request amount',
+            { row: usersPayrollHit.rowNumber, ny, nb, no },
+            'Users D/E/F invalid or D=0 — cannot compute request amount',
           )
           return ctx.reply(ctx.t('user-calendar-users-ed-invalid'), {
             reply_markup: createEmployeeUserActionsKeyboard(ctx, { includeWeekRequest: true }),
           })
         }
-        const periodKeys = [...new Set(draftKeys)]
         const requestedAt = new Date()
         const { monthKey, monthLabel } = monthKeyAndLabelFromRequestDate(requestedAt)
         const periodText = periodRangeTextFromDayKeys(periodKeys)
@@ -577,8 +650,10 @@ feature
             position,
             requestedAt,
             periodText,
-            greenDayCount: greenCount,
-            requestGreenDayKeys: periodKeys,
+            yellowDayCount: ny,
+            blueDayCount: nb,
+            orangeDayCount: no,
+            requestDayBuckets: draftOnlyBuckets,
             requestedAmount,
             status: 'Запрошена',
           })
@@ -602,8 +677,8 @@ feature
         }
       }
 
-      uc.lockedSavedDayKeys = allLockedAfterSave
-      uc.draftSelectedKeys = []
+      uc.payrollLockedBuckets = lockedAfterSave
+      uc.payrollDraftColoredKeys = []
 
       try {
         const localeCodeAfterSave = await ctx.i18n.getLocale()
@@ -691,6 +766,18 @@ feature
               if (!minAp)
                 current = stripMonthKeysFromTimesheetPayload(current, minM.y, minM.m)
               await writeJsonCalendarTimesheetColumnE(ctx, jsonRow, current)
+              if (!minAp) {
+                const readF = await readJsonCalendarTimesheetColumnF(ctx, jsonRow)
+                if (readF) {
+                  const strippedF = stripMonthKeysFromApprovedFrozenSnapshot(
+                    readF,
+                    minM.y,
+                    minM.m,
+                  )
+                  if (JSON.stringify(strippedF) !== JSON.stringify(readF))
+                    await writeJsonCalendarTimesheetColumnF(ctx, jsonRow, strippedF)
+                }
+              }
             }
             if (!minAp) {
               const label = monthLabelRuFromParts(minM.y, minM.m)
@@ -778,9 +865,8 @@ feature
       const payrollResetPosition = String(actorPayrollReset?.row[6] ?? '').trim() || '—'
       const payrollResetFio = String(actorPayrollReset?.row[1] ?? '').trim() || '—'
 
-      uc.lockedSavedDayKeys = []
-      uc.draftSelectedKeys = []
-      uc.payrollSettlement = undefined
+      uc.payrollLockedBuckets = emptyPayrollRequestColumnG()
+      uc.payrollDraftColoredKeys = []
 
       const spreadsheetId = ctx.config.sheetsSpreadsheetId.trim()
 
@@ -798,19 +884,36 @@ feature
 
       if (uc.jsonCalendarSheetRow !== null && uc.jsonCalendarSheetRow !== undefined) {
         try {
-          await clearUserCalendarColumnC(ctx, uc.jsonCalendarSheetRow)
+          await clearUserCalendarColumnG(ctx, uc.jsonCalendarSheetRow)
         }
         catch (error) {
-          ctx.logger.error({ err: error, row: uc.jsonCalendarSheetRow }, 'Failed to clear user calendar column C')
+          ctx.logger.error({ err: error, row: uc.jsonCalendarSheetRow }, 'Failed to clear user calendar column G')
           await ctx.reply(ctx.t('user-calendar-c-reset-sheet-error'), {
             reply_markup: createEmployeeUserActionsKeyboard(ctx, { includeWeekRequest: true }),
           })
         }
         try {
-          await clearUserCalendarColumnD(ctx, uc.jsonCalendarSheetRow)
+          const fromD = await readUserCalendarColumnD(ctx, uc.jsonCalendarSheetRow)
+          uc.payrollSettlement = fromD?.payrollSettlement
+          const paidKeys = new Set(
+            fromD?.payrollSettlement?.kind === 'approved'
+              ? fromD.payrollSettlement.paidGreenKeys
+              : [],
+          )
+          const curC = await readUserCalendarColumnC(ctx, uc.jsonCalendarSheetRow)
+          const filteredC = filterUserCalendarColumnCToPaidKeysOnly(curC, paidKeys)
+          await writeUserCalendarColumnC(ctx, uc.jsonCalendarSheetRow, filteredC)
+          uc.payrollLockedBuckets = filteredC
         }
         catch (error) {
-          ctx.logger.error({ err: error, row: uc.jsonCalendarSheetRow }, 'Failed to clear user calendar column D')
+          ctx.logger.warn({ err: error }, 'Failed to sync JSON calendar C/D after payroll reset')
+          try {
+            const fallbackC = await readUserCalendarColumnC(ctx, uc.jsonCalendarSheetRow)
+            uc.payrollLockedBuckets = fallbackC ?? emptyPayrollRequestColumnG()
+          }
+          catch {
+            uc.payrollLockedBuckets = emptyPayrollRequestColumnG()
+          }
         }
       }
 
@@ -880,24 +983,41 @@ feature.callbackQuery(
     const msgId = ctx.callbackQuery.message?.message_id
     const isUserCustomCalendar = Boolean(uc && msgId !== undefined && msgId === uc.calendarMessageId)
 
-    if (a === 'd' && d > 0) {
-      if (isCalendarDayAfterTodayAqtobe(y, m, d)) {
-        await ctx.answerCallbackQuery()
-        return
+    if (isUserCustomCalendar && uc && uc.jsonCalendarSheetRow != null && ctx.config.sheetsSpreadsheetId.trim()) {
+      try {
+        const fromD = await readUserCalendarColumnD(ctx, uc.jsonCalendarSheetRow)
+        uc.payrollSettlement = fromD?.payrollSettlement
       }
+      catch (error) {
+        ctx.logger.warn({ err: error }, 'Failed to refresh JSON calendar column D for payroll calendar')
+      }
+    }
+
+    if (a === 'd' && d > 0) {
       if (isUserCustomCalendar && uc) {
         const key = `${y}-${m}-${d}`
-        const locked = new Set(uc.lockedSavedDayKeys)
+        if (uc.payrollEligibleTierByKey[key] === undefined) {
+          await ctx.answerCallbackQuery()
+          return
+        }
+        const locked = payrollLockedKeysSet(uc.payrollLockedBuckets)
         if (locked.has(key)) {
           await ctx.answerCallbackQuery()
           return
         }
-        const draft = new Set(uc.draftSelectedKeys)
+        const paid = new Set(
+          uc.payrollSettlement?.kind === 'approved' ? uc.payrollSettlement.paidGreenKeys : [],
+        )
+        if (paid.has(key)) {
+          await ctx.answerCallbackQuery()
+          return
+        }
+        const draft = new Set(uc.payrollDraftColoredKeys)
         if (draft.has(key))
           draft.delete(key)
         else
           draft.add(key)
-        uc.draftSelectedKeys = [...draft].sort(
+        uc.payrollDraftColoredKeys = [...draft].sort(
           (a, b) => (dayKeyTimeMs(a) ?? 0) - (dayKeyTimeMs(b) ?? 0),
         )
 
@@ -920,10 +1040,31 @@ feature.callbackQuery(
     }
 
     if (a === 'x') {
-      await ctx.answerCallbackQuery({
-        show_alert: true,
-        text: ctx.t('user-calendar-settled-day-alert'),
-      })
+      if (d === 0) {
+        await ctx.answerCallbackQuery()
+        return
+      }
+      if (isUserCustomCalendar && uc) {
+        const key = `${y}-${m}-${d}`
+        const paid = new Set(
+          uc.payrollSettlement?.kind === 'approved' ? uc.payrollSettlement.paidGreenKeys : [],
+        )
+        if (paid.has(key)) {
+          await ctx.answerCallbackQuery()
+          return
+        }
+        const locked = payrollLockedKeysSet(uc.payrollLockedBuckets)
+        if (locked.has(key)) {
+          await ctx.answerCallbackQuery({
+            show_alert: true,
+            text: ctx.t('user-calendar-payroll-already-submitted-alert'),
+          })
+          return
+        }
+        await ctx.answerCallbackQuery()
+        return
+      }
+      await ctx.answerCallbackQuery()
       return
     }
 
@@ -939,15 +1080,6 @@ feature.callbackQuery(
     if (isUserCustomCalendar && uc) {
       uc.calendarYear = ny
       uc.calendarMonth = nm
-      if (uc.jsonCalendarSheetRow != null && ctx.config.sheetsSpreadsheetId.trim()) {
-        try {
-          const fromD = await readUserCalendarColumnD(ctx, uc.jsonCalendarSheetRow)
-          uc.payrollSettlement = fromD?.payrollSettlement
-        }
-        catch (error) {
-          ctx.logger.warn({ err: error }, 'Failed to refresh JSON calendar column D on month nav')
-        }
-      }
       kb = createPayrollCalendarKeyboard(ctx, ny, nm, localeCode, userCustomCalendarKbOpts(uc))
     }
     else {

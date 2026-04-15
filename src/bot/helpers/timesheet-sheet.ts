@@ -34,6 +34,21 @@ export const EMPTY_TIMESHEET_MONTH_JSON: TimesheetMonthKeysJson = {
   orangeKeys: [],
 }
 
+/**
+ * JSON в F после одобрения табеля: три списка ключей дней `y-m-d` (check / ballot / radio в UI).
+ */
+export interface TimesheetApprovedFrozenSnapshotJson {
+  checkMarkedDayKeys: string[]
+  ballotMarkedDayKeys: string[]
+  radioMarkedDayKeys: string[]
+}
+
+export const EMPTY_TIMESHEET_APPROVED_FROZEN_JSON: TimesheetApprovedFrozenSnapshotJson = {
+  checkMarkedDayKeys: [],
+  ballotMarkedDayKeys: [],
+  radioMarkedDayKeys: [],
+}
+
 /** Должность из листа Users (G) → правила смен в календаре табеля. */
 export function timesheetShiftModeFromPosition(positionRaw: string): TimesheetShiftMode {
   const p = positionRaw.trim()
@@ -140,6 +155,150 @@ export async function clearJsonCalendarTimesheetColumnE(
   sheetRow: number,
 ): Promise<void> {
   await writeJsonCalendarTimesheetColumnE(ctx, sheetRow, { ...EMPTY_TIMESHEET_MONTH_JSON })
+}
+
+export function parseTimesheetApprovedFrozenJsonCell(raw: string): TimesheetApprovedFrozenSnapshotJson {
+  const t = raw.trim()
+  if (!t)
+    return { ...EMPTY_TIMESHEET_APPROVED_FROZEN_JSON }
+  try {
+    const parsed = JSON.parse(t) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+      return { ...EMPTY_TIMESHEET_APPROVED_FROZEN_JSON }
+    const o = parsed as Record<string, unknown>
+    const arr = (key: string): string[] =>
+      Array.isArray(o[key])
+        ? (o[key] as unknown[]).filter((x): x is string => typeof x === 'string' && x.trim() !== '')
+        : []
+    return {
+      checkMarkedDayKeys: arr('checkMarkedDayKeys'),
+      ballotMarkedDayKeys: arr('ballotMarkedDayKeys'),
+      radioMarkedDayKeys: arr('radioMarkedDayKeys'),
+    }
+  }
+  catch {
+    return { ...EMPTY_TIMESHEET_APPROVED_FROZEN_JSON }
+  }
+}
+
+export function stripMonthKeysFromApprovedFrozenSnapshot(
+  payload: TimesheetApprovedFrozenSnapshotJson,
+  y: number,
+  m: number,
+): TimesheetApprovedFrozenSnapshotJson {
+  const inMonth = (k: string) => {
+    const p = parseTimesheetDayKey(k)
+    return p && p.y === y && p.m === m
+  }
+  return {
+    checkMarkedDayKeys: payload.checkMarkedDayKeys.filter(k => !inMonth(k)),
+    ballotMarkedDayKeys: payload.ballotMarkedDayKeys.filter(k => !inMonth(k)),
+    radioMarkedDayKeys: payload.radioMarkedDayKeys.filter(k => !inMonth(k)),
+  }
+}
+
+export function approvedFrozenSnapshotFromMonthKeysJson(
+  e: TimesheetMonthKeysJson,
+  y: number,
+  m: number,
+): TimesheetApprovedFrozenSnapshotJson {
+  const inMonth = (k: string) => {
+    const p = parseTimesheetDayKey(k)
+    return p && p.y === y && p.m === m
+  }
+  return {
+    checkMarkedDayKeys: e.yellowKeys.filter(inMonth),
+    ballotMarkedDayKeys: e.blueKeys.filter(inMonth),
+    radioMarkedDayKeys: e.orangeKeys.filter(inMonth),
+  }
+}
+
+export function mergeApprovedFrozenSnapshotReplaceMonth(
+  existing: TimesheetApprovedFrozenSnapshotJson,
+  monthSnap: TimesheetApprovedFrozenSnapshotJson,
+  y: number,
+  m: number,
+): TimesheetApprovedFrozenSnapshotJson {
+  const base = stripMonthKeysFromApprovedFrozenSnapshot(existing, y, m)
+  return {
+    checkMarkedDayKeys: [...base.checkMarkedDayKeys, ...monthSnap.checkMarkedDayKeys],
+    ballotMarkedDayKeys: [...base.ballotMarkedDayKeys, ...monthSnap.ballotMarkedDayKeys],
+    radioMarkedDayKeys: [...base.radioMarkedDayKeys, ...monthSnap.radioMarkedDayKeys],
+  }
+}
+
+export function tiersFromApprovedFrozenSnapshot(
+  payload: TimesheetApprovedFrozenSnapshotJson,
+  y: number,
+  m: number,
+): Record<string, TimesheetTier> {
+  const out: Record<string, TimesheetTier> = {}
+  for (const k of payload.checkMarkedDayKeys) {
+    const p = parseTimesheetDayKey(k)
+    if (p && p.y === y && p.m === m)
+      out[k] = 1
+  }
+  for (const k of payload.ballotMarkedDayKeys) {
+    const p = parseTimesheetDayKey(k)
+    if (p && p.y === y && p.m === m)
+      out[k] = 2
+  }
+  for (const k of payload.radioMarkedDayKeys) {
+    const p = parseTimesheetDayKey(k)
+    if (p && p.y === y && p.m === m)
+      out[k] = 3
+  }
+  return out
+}
+
+/** Все ключи из F (одобренный табель) → уровень 1/2/3 для календаря запроса зарплаты. */
+export function payrollEligibleTierByKeyFromFrozenF(
+  payload: TimesheetApprovedFrozenSnapshotJson,
+): Record<string, TimesheetTier> {
+  const out: Record<string, TimesheetTier> = {}
+  for (const k of payload.checkMarkedDayKeys)
+    out[k] = 1
+  for (const k of payload.ballotMarkedDayKeys)
+    out[k] = 2
+  for (const k of payload.radioMarkedDayKeys)
+    out[k] = 3
+  return out
+}
+
+export async function readJsonCalendarTimesheetColumnF(
+  ctx: Context,
+  sheetRow: number,
+): Promise<TimesheetApprovedFrozenSnapshotJson | null> {
+  const spreadsheetId = ctx.config.sheetsSpreadsheetId.trim()
+  if (!spreadsheetId)
+    return null
+  const { sheetName } = resolveJsonCalendarSheetLocation(ctx.config.sheetsJsonCalendarRange)
+  const prefix = a1SheetPrefix(sheetName)
+  try {
+    const vals = await ctx.sheetsRepo.readRange(spreadsheetId, `${prefix}!F${sheetRow}`)
+    return parseTimesheetApprovedFrozenJsonCell(String(vals[0]?.[0] ?? ''))
+  }
+  catch {
+    return null
+  }
+}
+
+export async function writeJsonCalendarTimesheetColumnF(
+  ctx: Context,
+  sheetRow: number,
+  payload: TimesheetApprovedFrozenSnapshotJson,
+): Promise<void> {
+  const spreadsheetId = ctx.config.sheetsSpreadsheetId.trim()
+  if (!spreadsheetId)
+    throw new Error('No spreadsheet id')
+  const { sheetName } = resolveJsonCalendarSheetLocation(ctx.config.sheetsJsonCalendarRange)
+  const prefix = a1SheetPrefix(sheetName)
+  await ctx.sheetsRepo.writeRange(
+    spreadsheetId,
+    `${prefix}!F${sheetRow}`,
+    [[JSON.stringify(payload)]],
+    'RAW',
+  )
 }
 
 export function resolveTimesheetSheetLocation(range: string): { sheetName: string, startRow: number } {
@@ -282,6 +441,29 @@ export async function findTimesheetRowByMonthLabelAndUsername(
       return startRow + i
   }
   return null
+}
+
+/** Колонки A–B строки табеля: месяц (подпись) и ник. */
+export async function readTimesheetMonthLabelAndNickForRow(
+  ctx: Context,
+  sheetRow: number,
+): Promise<{ monthLabel: string, nick: string } | null> {
+  const spreadsheetId = ctx.config.sheetsSpreadsheetId.trim()
+  if (!spreadsheetId)
+    return null
+  const { sheetName } = resolveTimesheetSheetLocation(ctx.config.sheetsTimesheetRange)
+  const prefix = a1SheetPrefix(sheetName)
+  try {
+    const vals = await ctx.sheetsRepo.readRange(spreadsheetId, `${prefix}!A${sheetRow}:B${sheetRow}`)
+    const monthLabel = String(vals[0]?.[0] ?? '').trim()
+    const nick = String(vals[0]?.[1] ?? '').trim()
+    if (!monthLabel || !nick)
+      return null
+    return { monthLabel, nick }
+  }
+  catch {
+    return null
+  }
 }
 
 /** Д — дневная (жёлтый), В — вечерняя (синий), ДВ — обе смены в день; D:AH = дни 1–31. */

@@ -27,13 +27,13 @@ const baseConfigSchema = v.object({
   sheetsCredentialsPath: v.optional(v.string(), ''),
   /** Лист Users (зарплата): имя листа и первая строка данных из env; бот читает A–H (роль сотрудника в H). */
   sheetsPayrollRequestsRange: v.optional(v.string(), 'Users!A2:H'),
-  /** Лист JSON Calendar: A — @username, B — JSON сотрудника, C — зарплатный календарь, D — решение по выплате, E — черновик табеля (жёлтый/синий). */
+  /** Лист JSON Calendar: … E — черновик табеля, F — одобренный табель, G — черновик запроса зарплаты. */
   sheetsJsonCalendarRange: v.optional(
     v.pipe(
       v.string(),
-      v.transform(s => (s.trim() === '' ? '\'JSON Calendar\'!A2:E' : s.trim())),
+      v.transform(s => (s.trim() === '' ? '\'JSON Calendar\'!A2:G' : s.trim())),
     ),
-    '\'JSON Calendar\'!A2:E',
+    '\'JSON Calendar\'!A2:G',
   ),
   /** Лист Timesheet: строки 1–2 не используются; с 3-й — A месяц, B ник, C ФИО, D:AH дни, AI статус, AJ сумма за месяц (бот). */
   sheetsTimesheetRange: v.optional(
@@ -43,7 +43,7 @@ const baseConfigSchema = v.object({
     ),
     '\'Timesheet\'!A3:AJ',
   ),
-  /** Лист истории: A — месяц, B–H — данные; I–J пустые; K — JSON ключей дней запроса (y-m-d). */
+  /** Лист истории: A — месяц, B–H — данные; I–J пустые; K — JSON корзин дней запроса (yellow/blue/orange). */
   sheetsPaymentHistoryRange: v.optional(
     v.pipe(
       v.string(),

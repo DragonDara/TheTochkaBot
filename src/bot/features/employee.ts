@@ -16,13 +16,16 @@ import { logHandle } from '#root/bot/helpers/logging.js'
 import {
   listPaymentHistoryPendingApprovalCurrentMonth,
   normalizePayrollStatusCell,
-  parsePaymentHistoryRequestGreenDayKeys,
+  parsePaymentHistoryRequestDayBuckets,
+  parseRuMonthLabelToYearMonth0,
   readPaymentHistoryRowBtoK,
+  unionPaymentHistoryRequestDayKeys,
   updatePaymentHistoryStatusIfRequested,
 } from '#root/bot/helpers/payment-history-sheet.js'
 import {
+  emptyUserCalendarColumnCPayload,
   readUserCalendarColumnC,
-  stripPaidKeysFromUserCalendarColumnC,
+  stripKeysFromUserCalendarColumnC,
   writeUserCalendarColumnC,
 } from '#root/bot/helpers/payroll-user-calendar-c.js'
 import {
@@ -30,11 +33,29 @@ import {
   readUserCalendarColumnD,
   writeUserCalendarColumnD,
 } from '#root/bot/helpers/payroll-user-calendar-d.js'
+import {
+  emptyPayrollRequestColumnG,
+  readUserCalendarColumnG,
+  stripPaidKeysFromUserCalendarColumnG,
+  unionDayKeysFromPayrollBuckets,
+  writeUserCalendarColumnG,
+} from '#root/bot/helpers/payroll-user-calendar-g.js'
 import { findUsersPayrollRowNumberByFio } from '#root/bot/helpers/payroll-users-sheet.js'
 import {
   listTimesheetPendingApproval,
   updateTimesheetApprovalStatusIfPending,
 } from '#root/bot/helpers/timesheet-approval-sheet.js'
+import {
+  approvedFrozenSnapshotFromMonthKeysJson,
+  EMPTY_TIMESHEET_APPROVED_FROZEN_JSON,
+  EMPTY_TIMESHEET_MONTH_JSON,
+  mergeApprovedFrozenSnapshotReplaceMonth,
+  readJsonCalendarTimesheetColumnE,
+  readJsonCalendarTimesheetColumnF,
+  readTimesheetMonthLabelAndNickForRow,
+  stripMonthKeysFromApprovedFrozenSnapshot,
+  writeJsonCalendarTimesheetColumnF,
+} from '#root/bot/helpers/timesheet-sheet.js'
 import { createEmployeeReplyKeyboard } from '#root/bot/keyboards/employee-reply.js'
 import { Composer, InlineKeyboard } from 'grammy'
 
@@ -236,14 +257,22 @@ feature.callbackQuery(
           if (usernameCell) {
             const jsonRow = await findJsonCalendarSheetRowForUsername(ctx, usernameCell)
             if (jsonRow != null) {
+              const fromG = await readUserCalendarColumnG(ctx, jsonRow)
               const fromC = await readUserCalendarColumnC(ctx, jsonRow)
               const existingD = await readUserCalendarColumnD(ctx, jsonRow)
-              const keysFromPh = parsePaymentHistoryRequestGreenDayKeys(
+              const bucketsFromPh = parsePaymentHistoryRequestDayBuckets(
                 bh[PH_REQUEST_GREEN_DAY_KEYS_INDEX],
               )
-              const keysForRequest = keysFromPh.length > 0
-                ? keysFromPh
-                : (fromC?.userGreenDayKeys ?? [])
+              const keysFromPh = unionPaymentHistoryRequestDayKeys(bucketsFromPh)
+              const paidSoFar = new Set(
+                existingD?.payrollSettlement?.kind === 'approved'
+                  ? existingD.payrollSettlement.paidGreenKeys
+                  : [],
+              )
+              const keysFromC = fromC
+                ? unionDayKeysFromPayrollBuckets(fromC).filter(k => !paidSoFar.has(k))
+                : []
+              const keysForRequest = keysFromPh.length > 0 ? keysFromPh : keysFromC
               const hadPaid
                 = existingD?.payrollSettlement?.kind === 'approved'
                   && existingD.payrollSettlement.paidGreenKeys.length > 0
@@ -253,20 +282,35 @@ feature.callbackQuery(
                   'No day keys for this PH row (empty K and C); column D gets approved with empty paidGreenKeys',
                 )
               }
-              // D: каждый раз перезаписываем — одобрение добавляет даты запроса в paidGreenKeys, отказ вычитает.
               const columnD = applyPayrollPhDecisionToJsonCalendarD(approved, keysForRequest, existingD)
               await writeUserCalendarColumnD(ctx, jsonRow, columnD)
-              // C: после любого решения убираем из userGreenDayKeys только даты этого запроса.
-              if (fromC && keysForRequest.length > 0) {
-                const stripped = stripPaidKeysFromUserCalendarColumnC(fromC, keysForRequest)
-                if (stripped) {
+              if (keysForRequest.length > 0) {
+                if (fromG) {
+                  const nextG
+                    = stripPaidKeysFromUserCalendarColumnG(fromG, keysForRequest) ?? emptyPayrollRequestColumnG()
                   try {
-                    await writeUserCalendarColumnC(ctx, jsonRow, stripped)
+                    await writeUserCalendarColumnG(ctx, jsonRow, nextG)
+                  }
+                  catch (error) {
+                    ctx.logger.warn(
+                      { err: error, jsonRow, approved },
+                      'Failed to sync JSON Calendar column G after payroll decision',
+                    )
+                  }
+                }
+                if (!approved) {
+                  const nextC = stripKeysFromUserCalendarColumnC(fromC, keysForRequest)
+                  try {
+                    await writeUserCalendarColumnC(
+                      ctx,
+                      jsonRow,
+                      nextC ?? emptyUserCalendarColumnCPayload(),
+                    )
                   }
                   catch (error) {
                     ctx.logger.warn(
                       { err: error, jsonRow },
-                      'Failed to sync JSON Calendar column C after payroll decision',
+                      'Failed to sync JSON Calendar column C after payroll rejection',
                     )
                   }
                 }
@@ -320,6 +364,49 @@ feature.callbackQuery(
         await tryStripApprovalInlineKeyboard(ctx)
         await ctx.answerCallbackQuery({ text: ctx.t('employee-approve-already-handled') })
         return
+      }
+
+      try {
+        const ab = await readTimesheetMonthLabelAndNickForRow(ctx, sheetRow)
+        if (ab) {
+          const ym = parseRuMonthLabelToYearMonth0(ab.monthLabel)
+          if (ym) {
+            const jsonRow = await findJsonCalendarSheetRowForUsername(ctx, ab.nick)
+            if (jsonRow !== null) {
+              if (approved) {
+                const fromE = await readJsonCalendarTimesheetColumnE(ctx, jsonRow)
+                const ePayload = fromE ?? { ...EMPTY_TIMESHEET_MONTH_JSON }
+                const monthSnap = approvedFrozenSnapshotFromMonthKeysJson(ePayload, ym.y, ym.m0)
+                const existingF = (await readJsonCalendarTimesheetColumnF(ctx, jsonRow))
+                  ?? { ...EMPTY_TIMESHEET_APPROVED_FROZEN_JSON }
+                const merged = mergeApprovedFrozenSnapshotReplaceMonth(
+                  existingF,
+                  monthSnap,
+                  ym.y,
+                  ym.m0,
+                )
+                await writeJsonCalendarTimesheetColumnF(ctx, jsonRow, merged)
+              }
+              else {
+                const existingF = (await readJsonCalendarTimesheetColumnF(ctx, jsonRow))
+                  ?? { ...EMPTY_TIMESHEET_APPROVED_FROZEN_JSON }
+                const stripped = stripMonthKeysFromApprovedFrozenSnapshot(
+                  existingF,
+                  ym.y,
+                  ym.m0,
+                )
+                if (JSON.stringify(stripped) !== JSON.stringify(existingF))
+                  await writeJsonCalendarTimesheetColumnF(ctx, jsonRow, stripped)
+              }
+            }
+          }
+        }
+      }
+      catch (error) {
+        ctx.logger.warn(
+          { err: error, sheetRow, approved },
+          'Failed to sync JSON Calendar column F after timesheet approval',
+        )
       }
 
       await tryStripApprovalInlineKeyboard(ctx)

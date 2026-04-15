@@ -76,7 +76,9 @@ build
 .yarn-integrity
 
 # dotenv environment variable files
-.env*
+.env
+.env.bot.dev
+.env.bot.prod
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache
@@ -127,8 +129,6 @@ dist
 
 # Data
 data/
-
-*.env
 
 # Jetbrains IDE
 .idea/

@@ -51,6 +51,14 @@ export function monthLabelRuFromParts(y: number, m0: number): string {
 }
 
 function monthKeyFromRuLabel(label: string): string | null {
+  const parts = parseRuMonthLabelToYearMonth0(label)
+  if (!parts)
+    return null
+  return monthKeyFromYMonth(parts.y, parts.m0)
+}
+
+/** «Апрель 2026» → год и месяц 0-based (колонка A табеля). */
+export function parseRuMonthLabelToYearMonth0(label: string): { y: number, m0: number } | null {
   const t = label.trim()
   const re = /^(\S+)\s+(\d{4})$/
   const m = re.exec(t)
@@ -61,7 +69,7 @@ function monthKeyFromRuLabel(label: string): string | null {
   const idx = RU_MONTHS.indexOf(name as (typeof RU_MONTHS)[number])
   if (!Number.isFinite(y) || idx < 0)
     return null
-  return monthKeyFromYMonth(y, idx)
+  return { y, m0: idx }
 }
 
 export function formatRequestTimestampRu(d: Date): string {
@@ -235,6 +243,23 @@ export function computePayrollRequestAmountFromUsersRow(
   return (e / d) * greenDayCount
 }
 
+/**
+ * Сумма запроса: (E/D)×жёлтых + (F/D)×синих + ((E+F)/D)×оранжевых (Users: D делитель, E/F ставки как в табеле).
+ */
+export function computePayrollRequestAmountFromUsersRowTiered(
+  row: string[],
+  yellowDayCount: number,
+  blueDayCount: number,
+  orangeDayCount: number,
+): number | null {
+  const d = parseSheetNumericCell(row[3])
+  const e = parseSheetNumericCell(row[4])
+  const f = parseSheetNumericCell(row[5])
+  if (d === null || e === null || f === null || d === 0)
+    return null
+  return (e / d) * yellowDayCount + (f / d) * blueDayCount + ((e + f) / d) * orangeDayCount
+}
+
 function formatAmountForPaymentHistoryCell(amount: number): string {
   return String(Math.round(amount * 100) / 100)
 }
@@ -381,24 +406,59 @@ export async function readPaymentHistoryRowBtoK(
 /** Совместимость: то же, что {@link readPaymentHistoryRowBtoK}. */
 export const readPaymentHistoryRowBtoH = readPaymentHistoryRowBtoK
 
-/** Парсинг колонки K: массив ключей дней `y-m-d`. */
-export function parsePaymentHistoryRequestGreenDayKeys(raw: string | undefined): string[] {
+export interface PaymentHistoryRequestDayBuckets {
+  yellowKeys: string[]
+  blueKeys: string[]
+  orangeKeys: string[]
+}
+
+function normalizeBucketKeys(arr: unknown): string[] {
+  if (!Array.isArray(arr))
+    return []
+  return arr.filter((k): k is string => typeof k === 'string' && k.trim() !== '')
+}
+
+/** Парсинг колонки K: объекты с yellowKeys/blueKeys/orangeKeys или устаревший JSON-массив (всё в жёлтые). */
+export function parsePaymentHistoryRequestDayBuckets(raw: string | undefined): PaymentHistoryRequestDayBuckets {
   const t = String(raw ?? '').trim()
   if (!t)
-    return []
+    return { yellowKeys: [], blueKeys: [], orangeKeys: [] }
   try {
     const parsed = JSON.parse(t) as unknown
-    if (!Array.isArray(parsed))
-      return []
-    return parsed.filter((k): k is string => typeof k === 'string' && k.trim() !== '')
+    if (Array.isArray(parsed)) {
+      const keys = parsed.filter((k): k is string => typeof k === 'string' && k.trim() !== '')
+      return { yellowKeys: keys, blueKeys: [], orangeKeys: [] }
+    }
+    if (!parsed || typeof parsed !== 'object')
+      return { yellowKeys: [], blueKeys: [], orangeKeys: [] }
+    const o = parsed as { yellowKeys?: unknown, blueKeys?: unknown, orangeKeys?: unknown }
+    return {
+      yellowKeys: normalizeBucketKeys(o.yellowKeys),
+      blueKeys: normalizeBucketKeys(o.blueKeys),
+      orangeKeys: normalizeBucketKeys(o.orangeKeys),
+    }
   }
   catch {
-    return []
+    return { yellowKeys: [], blueKeys: [], orangeKeys: [] }
   }
 }
 
-function formatPaymentHistoryRequestGreenDayKeysCell(keys: string[]): string {
-  return JSON.stringify(keys)
+/** Все ключи запроса (для периода F и одобрения D). */
+export function unionPaymentHistoryRequestDayKeys(b: PaymentHistoryRequestDayBuckets): string[] {
+  return [...new Set([...b.yellowKeys, ...b.blueKeys, ...b.orangeKeys])]
+}
+
+/** @deprecated Используйте {@link parsePaymentHistoryRequestDayBuckets} и {@link unionPaymentHistoryRequestDayKeys}. */
+export function parsePaymentHistoryRequestGreenDayKeys(raw: string | undefined): string[] {
+  return unionPaymentHistoryRequestDayKeys(parsePaymentHistoryRequestDayBuckets(raw))
+}
+
+function formatPaymentHistoryRequestDayBucketsCell(b: PaymentHistoryRequestDayBuckets): string {
+  return JSON.stringify({
+    yellowKeys: b.yellowKeys,
+    blueKeys: b.blueKeys,
+    orangeKeys: b.orangeKeys,
+  })
 }
 
 export async function updatePaymentHistoryStatusIfRequested(
@@ -486,12 +546,15 @@ export interface AppendPaymentHistoryInput {
   position: string
   requestedAt: Date
   periodText: string
-  greenDayCount: number
-  /** Ключи дней этого запроса (`y-m-d`) — JSON в колонке K, если {@link writeRequestGreenDayKeysToColumnK} не false. */
-  requestGreenDayKeys: string[]
+  /** Число дней по типам (для логов/совместимости). */
+  yellowDayCount: number
+  blueDayCount: number
+  orangeDayCount: number
+  /** Ключи по корзинам — JSON в колонке K. */
+  requestDayBuckets: PaymentHistoryRequestDayBuckets
   /** По умолчанию true. Если false — колонка K пустая (поток «табель»). */
-  writeRequestGreenDayKeysToColumnK?: boolean
-  /** Сумма в колонке G листа Payment History: `(E/D)*greenDayCount` по строке Users, посчитано в коде. */
+  writeRequestDayBucketsToColumnK?: boolean
+  /** Сумма в колонке G листа Payment History, посчитана в коде. */
   requestedAmount: number
   status: string
 }
@@ -538,8 +601,8 @@ export async function appendSalaryPaymentHistoryRow(
 
   const e = formatRequestTimestampRu(input.requestedAt)
   const gValue = formatAmountForPaymentHistoryCell(input.requestedAmount)
-  const writeK = input.writeRequestGreenDayKeysToColumnK !== false
-  const kCell = writeK ? formatPaymentHistoryRequestGreenDayKeysCell(input.requestGreenDayKeys) : ''
+  const writeK = input.writeRequestDayBucketsToColumnK !== false
+  const kCell = writeK ? formatPaymentHistoryRequestDayBucketsCell(input.requestDayBuckets) : ''
   const bToK = [[
     String(requestNum),
     input.fio,

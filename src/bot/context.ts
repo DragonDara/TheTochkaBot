@@ -1,5 +1,5 @@
 import type { PayrollSettlementColumnD } from '#root/bot/helpers/payroll-user-calendar-d.js'
-import type { TimesheetShiftMode, TimesheetTier } from '#root/bot/helpers/timesheet-sheet.js'
+import type { TimesheetMonthKeysJson, TimesheetShiftMode, TimesheetTier } from '#root/bot/helpers/timesheet-sheet.js'
 import type { Config } from '#root/config.js'
 import type { Logger } from '#root/logger.js'
 import type { SheetsRepo } from '#root/repos/sheets-repo.js'
@@ -14,7 +14,7 @@ export interface SessionData {
   /** Сообщение пользователя «Запросить зарплату» с прошлого входа в поток — удалить при следующем. */
   previousPayrollRequestUserMessageId?: number
   timesheetFillUserMessageId?: number
-  /** Пользователь «запрос зарплаты»: только 🟢; дни включаются/снимаются по одному клику. */
+  /** Пользователь «запрос зарплаты»: дни из одобренного табеля (F), черновик в G. */
   userCustomCalendar?: {
     calendarYear: number
     calendarMonth: number
@@ -24,18 +24,20 @@ export interface SessionData {
     actionsHintMessageId?: number
     /** Последняя пара «Сохранить» (пользователь) + «Сохранено.» (бот) — удалить при следующем «Сохранить». */
     lastSaveAckPair?: { userMessageId: number, botMessageId: number }
-    /** Уже сохранённые дни (🟢 не кликабельны до «Сбросить»; после одобрения — ✅+число, клик без эффекта). */
-    lockedSavedDayKeys: string[]
-    /** Текущий черновик: отмеченные кликом дни (вне locked). */
-    draftSelectedKeys: string[]
-    /** Строка на листе JSON Calendar (A = telegram_id), для чтения/очистки колонки C. */
+    /** Из колонки F: ключ дня → уровень табеля (1/2/3). */
+    payrollEligibleTierByKey: Record<string, TimesheetTier>
+    /** Сохранённый черновик запроса (колонка G). */
+    payrollLockedBuckets: TimesheetMonthKeysJson
+    /** Дни в цветном режиме запроса (черновик). */
+    payrollDraftColoredKeys: string[]
+    /** Строка на листе JSON Calendar (A = @username). */
     jsonCalendarSheetRow?: number | null
     /** Строки Payment History после «Сохранить» в этой сессии (удаление при «Сбросить» снизу вверх). */
     paymentHistorySheetRows: number[]
     /** Решение сотрудника по последнему запросу (лист JSON Calendar, колонка D). */
     payrollSettlement?: PayrollSettlementColumnD
   }
-  /** Поток «Заполнить табель»: лист Timesheet (D:AH) и JSON Calendar E; не Payment History. */
+  /** Поток «Заполнить табель»: лист Timesheet (D:AH) и JSON Calendar E/F; не Payment History. */
   timesheetCalendar?: {
     calendarYear: number
     calendarMonth: number
@@ -53,7 +55,7 @@ export interface SessionData {
     selectionAnchorMonth?: { y: number, m: number }
     /** Статус AI на листе Timesheet для текущего месяца (Asia/Aqtobe), ключ `y-m`. */
     monthApprovalByYm?: Record<string, 'approved' | 'rejected' | 'none'>
-    /** Дни, уже попавшие в одобренный табель при входе (из E): только они — ✔️/☑️; новые отметки — 🟡/🔵. */
+    /** Дни из одобренного табеля при входе (см. календарь табеля). */
     approvedFrozenDayKeys?: string[]
     /** После «Не одобрен»: очистить D:AH при следующем успешном сохранении табеля. */
     pendingClearTimesheetDahForMonths?: { y: number, m: number }[]

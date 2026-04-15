@@ -1,5 +1,4 @@
 import type { Context } from '#root/bot/context.js'
-import type { UserCalendarColumnCPayload } from '#root/bot/helpers/payroll-user-calendar-c.js'
 import { a1SheetPrefix, resolveJsonCalendarSheetLocation } from '#root/bot/helpers/json-calendar-sheet.js'
 
 /** Решение по зарплате (колонка D листа JSON Calendar). */
@@ -90,9 +89,9 @@ export async function clearUserCalendarColumnD(ctx: Context, sheetRow: number): 
 
 export function buildJsonCalendarColumnDAfterEmployeeDecision(
   approved: boolean,
-  c: UserCalendarColumnCPayload | null,
+  requestDayKeys: string[],
 ): JsonCalendarColumnDPayload {
-  return applyPayrollPhDecisionToJsonCalendarD(approved, c?.userGreenDayKeys ?? [], null)
+  return applyPayrollPhDecisionToJsonCalendarD(approved, requestDayKeys, null)
 }
 
 function paidKeysFromExisting(existing: JsonCalendarColumnDPayload | null): string[] {
