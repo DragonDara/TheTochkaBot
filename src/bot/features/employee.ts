@@ -8,6 +8,7 @@ import {
 } from '#root/bot/callback-data/payroll-approval.js'
 import { timesheetApprovalData } from '#root/bot/callback-data/timesheet-approval.js'
 import { isEmployee } from '#root/bot/filters/is-employee.js'
+import { notifyUserByUsernameText } from '#root/bot/helpers/accountant-notify.js'
 import {
   findJsonCalendarSheetRowForUsername,
   readUsersSheetColumnA,
@@ -18,6 +19,7 @@ import {
   normalizePayrollStatusCell,
   parsePaymentHistoryRequestDayBuckets,
   parseRuMonthLabelToYearMonth0,
+  readPaymentHistoryPeriodCellF,
   readPaymentHistoryRowBtoK,
   unionPaymentHistoryRequestDayKeys,
   updatePaymentHistoryStatusIfRequested,
@@ -169,7 +171,7 @@ async function sendEmployeeRequestedTimesheetsFlow(ctx: Context) {
       )
 
     const head = r.position.trim() ? `${r.fio} - ${r.position.trim()}` : r.fio
-    const text = `${head}\n${r.monthLabel}\n\n${ctx.t('employee-timesheet-approve-question')}`
+    const text = `${head}\n${r.monthLabel}\n${r.requestedDaysText}\n\n${ctx.t('employee-timesheet-approve-question')}`
     await ctx.reply(text, { reply_markup: keyboard })
   }
 
@@ -255,7 +257,8 @@ feature.callbackQuery(
         try {
           const usernameCell = await readUsersSheetColumnA(ctx, usersRow)
           if (usernameCell) {
-            const jsonRow = await findJsonCalendarSheetRowForUsername(ctx, usernameCell)
+            const username = usernameCell
+            const jsonRow = await findJsonCalendarSheetRowForUsername(ctx, username)
             if (jsonRow != null) {
               const fromG = await readUserCalendarColumnG(ctx, jsonRow)
               const fromC = await readUserCalendarColumnC(ctx, jsonRow)
@@ -315,6 +318,19 @@ feature.callbackQuery(
                   }
                 }
               }
+            }
+            try {
+              const period = await readPaymentHistoryPeriodCellF(ctx, phSheetRow)
+              const notifyText = approved
+                ? ctx.t('user-notify-payroll-approved', { period: period || '—' })
+                : ctx.t('user-notify-payroll-rejected', { period: period || '—' })
+              await notifyUserByUsernameText(ctx, username, notifyText)
+            }
+            catch (error) {
+              ctx.logger.warn(
+                { err: error, usersRow, phSheetRow, approved },
+                'Failed to notify user after payroll decision',
+              )
             }
           }
         }
@@ -399,6 +415,16 @@ feature.callbackQuery(
                   await writeJsonCalendarTimesheetColumnF(ctx, jsonRow, stripped)
               }
             }
+          }
+
+          try {
+            const notifyText = approved
+              ? ctx.t('user-notify-timesheet-approved', { month: ab.monthLabel })
+              : ctx.t('user-notify-timesheet-rejected', { month: ab.monthLabel })
+            await notifyUserByUsernameText(ctx, ab.nick, notifyText)
+          }
+          catch (error) {
+            ctx.logger.warn({ err: error, sheetRow, approved }, 'Failed to notify user after timesheet decision')
           }
         }
       }

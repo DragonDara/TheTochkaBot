@@ -45,7 +45,10 @@ import {
 } from '#root/bot/helpers/payroll-user-calendar-g.js'
 import { findUsersPayrollRowByUsername } from '#root/bot/helpers/payroll-users-sheet.js'
 import { usernameForSheetMatching } from '#root/bot/helpers/telegram-usernames.js'
-import { reconcileJsonCalendarTimesheetColumnFWithTimesheetAiForUser } from '#root/bot/helpers/timesheet-approval-sheet.js'
+import {
+  clearTimesheetApprovalStatusCell,
+  reconcileJsonCalendarTimesheetColumnFWithTimesheetAiForUser,
+} from '#root/bot/helpers/timesheet-approval-sheet.js'
 import { syncTimesheetSessionOnEntry } from '#root/bot/helpers/timesheet-session-sync.js'
 import {
   advanceTimesheetDraftTier,
@@ -477,6 +480,12 @@ feature
             }
             await writeTimesheetDayCellsForMonth(ctx, row, y, m, {})
             await writeTimesheetAjMonthTotalForUserRow(ctx, row, y, m, {}, sheetUser)
+            try {
+              await clearTimesheetApprovalStatusCell(ctx, row)
+            }
+            catch (error) {
+              ctx.logger.warn({ err: error, row }, 'Failed to clear Timesheet AI after timesheet save (pending clear)')
+            }
             ts.pendingClearTimesheetDahForMonths = (ts.pendingClearTimesheetDahForMonths ?? []).filter(
               p => !(p.y === y && p.m === m),
             )
@@ -497,6 +506,12 @@ feature
             }
             await writeTimesheetDayCellsForMonth(ctx, row, y, m, merged)
             await writeTimesheetAjMonthTotalForUserRow(ctx, row, y, m, merged, sheetUser)
+            try {
+              await clearTimesheetApprovalStatusCell(ctx, row)
+            }
+            catch (error) {
+              ctx.logger.warn({ err: error, row }, 'Failed to clear Timesheet AI after timesheet save')
+            }
           }
         }
         catch (error) {

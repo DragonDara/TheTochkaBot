@@ -45,6 +45,30 @@ export interface TimesheetPendingApprovalItem {
   /** Должность с листа Users (G), по нику из колонки B табеля. */
   position: string
   monthLabel: string
+  requestedDaysText: string
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, '0')
+}
+
+function requestedDaysTextFromRow(row: string[], monthLabel: string): string {
+  const ym = parseRuMonthLabelToYearMonth0(monthLabel)
+  const month = ym ? ym.m0 + 1 : null
+  const parts: string[] = []
+
+  for (let j = COL_D_INDEX; j <= COL_AH_INDEX; j++) {
+    const raw = String(row[j] ?? '').trim()
+    if (!raw)
+      continue
+    const day = j - COL_D_INDEX + 1
+    const dayLabel = month !== null
+      ? `${pad2(day)}.${pad2(month)}`
+      : String(day)
+    parts.push(`${dayLabel} - ${raw}`)
+  }
+
+  return parts.join('; ')
 }
 
 /**
@@ -103,6 +127,7 @@ export async function listTimesheetPendingApproval(
       fio,
       position,
       monthLabel,
+      requestedDaysText: requestedDaysTextFromRow(row, monthLabel),
     })
   }
   return out
@@ -251,4 +276,22 @@ export async function updateTimesheetApprovalStatusIfPending(
     'USER_ENTERED',
   )
   return true
+}
+
+/** Очищает AI (статус одобрения) в строке табеля — после сохранения табеля пользователем. */
+export async function clearTimesheetApprovalStatusCell(
+  ctx: Context,
+  sheetRow: number,
+): Promise<void> {
+  const spreadsheetId = ctx.config.sheetsSpreadsheetId.trim()
+  if (!spreadsheetId)
+    return
+  const { sheetName } = resolveTimesheetSheetLocation(ctx.config.sheetsTimesheetRange)
+  const prefix = a1SheetPrefix(sheetName)
+  await ctx.sheetsRepo.writeRange(
+    spreadsheetId,
+    `${prefix}!AI${sheetRow}`,
+    [['']],
+    'RAW',
+  )
 }
