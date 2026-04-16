@@ -249,6 +249,52 @@ export async function reconcileJsonCalendarTimesheetColumnFWithTimesheetAiForUse
   }
 }
 
+/** Сверяет JSON Calendar F с AI для всех пользователей, найденных в листе Timesheet. */
+export async function reconcileJsonCalendarTimesheetColumnFWithTimesheetAiForAllUsers(
+  ctx: Context,
+): Promise<void> {
+  const spreadsheetId = ctx.config.sheetsSpreadsheetId.trim()
+  if (!spreadsheetId)
+    return
+
+  const { sheetName, startRow } = resolveTimesheetSheetLocation(ctx.config.sheetsTimesheetRange)
+  const prefix = a1SheetPrefix(sheetName)
+  let rows: string[][]
+  try {
+    rows = await ctx.sheetsRepo.readRange(
+      spreadsheetId,
+      `${prefix}!A${startRow}:C${startRow + 4999}`,
+    )
+  }
+  catch (error) {
+    ctx.logger.warn({ err: error }, 'Failed to read Timesheet usernames for F/AI reconcile')
+    return
+  }
+
+  const users = new Set<string>()
+  for (let i = 0; i < rows.length; i++) {
+    const sheetRowNumber = startRow + i
+    if (sheetRowNumber < 3)
+      continue
+    const row = rows[i]
+    const nick = String(row?.[1] ?? '').trim()
+    const fio = String(row?.[2] ?? '').trim()
+    const normalized = normalizeTelegramUsername(nick)
+    if (!normalized || !fio)
+      continue
+    users.add(normalized)
+  }
+
+  for (const username of users) {
+    try {
+      await reconcileJsonCalendarTimesheetColumnFWithTimesheetAiForUser(ctx, username)
+    }
+    catch (error) {
+      ctx.logger.warn({ err: error, username }, 'Failed to reconcile JSON Calendar F with Timesheet AI for user')
+    }
+  }
+}
+
 /**
  * Пишет статус в AI только если сейчас «ожидание» (пусто или не финальный статус).
  */

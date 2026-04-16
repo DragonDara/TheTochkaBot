@@ -45,6 +45,7 @@ import {
 import { findUsersPayrollRowNumberByFio } from '#root/bot/helpers/payroll-users-sheet.js'
 import {
   listTimesheetPendingApproval,
+  reconcileJsonCalendarTimesheetColumnFWithTimesheetAiForAllUsers,
   updateTimesheetApprovalStatusIfPending,
 } from '#root/bot/helpers/timesheet-approval-sheet.js'
 import {
@@ -139,6 +140,7 @@ async function sendEmployeeRequestedTimesheetsFlow(ctx: Context) {
   const tsRange = ctx.config.sheetsTimesheetRange.trim()
   let rows: Awaited<ReturnType<typeof listTimesheetPendingApproval>>
   try {
+    await reconcileJsonCalendarTimesheetColumnFWithTimesheetAiForAllUsers(ctx)
     rows = await listTimesheetPendingApproval(ctx)
   }
   catch (error) {

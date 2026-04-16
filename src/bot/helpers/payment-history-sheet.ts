@@ -318,6 +318,56 @@ export async function findLatestPendingPaymentHistoryRowForUsersSheetRow(
   return bestFioOnly
 }
 
+/** Все строки листа Payment History со статусом «Запрошена», с тем же ФИО (кол. C), что на строке Users. */
+export async function listPendingPaymentHistoryRowsForUsersSheetRow(
+  ctx: Context,
+  usersSheetRow: number,
+): Promise<number[]> {
+  const spreadsheetId = ctx.config.sheetsSpreadsheetId.trim()
+  if (!spreadsheetId)
+    return []
+
+  const usersPrefix = usersPayrollSheetPrefix(ctx)
+  let userRowVals: string[][]
+  try {
+    userRowVals = await ctx.sheetsRepo.readRange(
+      spreadsheetId,
+      `${usersPrefix}!B${usersSheetRow}:B${usersSheetRow}`,
+    )
+  }
+  catch {
+    return []
+  }
+  const fio = String(userRowVals[0]?.[0] ?? '').trim()
+  if (!fio)
+    return []
+
+  const { startRow, prefix } = paymentHistoryLocation(ctx)
+  const readRange = `${prefix}!B${startRow}:K${startRow + 4999}`
+  let rows: string[][]
+  try {
+    rows = await ctx.sheetsRepo.readRange(spreadsheetId, readRange)
+  }
+  catch {
+    return []
+  }
+
+  const out: number[] = []
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i]
+    if (!paymentHistoryBSliceRowLooksLikeData(r))
+      continue
+    const rowFio = String(r?.[1] ?? '').trim()
+    const rowStatus = String(r?.[6] ?? '').trim()
+    if (normalizePayrollStatusCell(rowStatus) !== 'запрошена')
+      continue
+    if (rowFio !== fio)
+      continue
+    out.push(startRow + i)
+  }
+  return out
+}
+
 /**
  * Меняет H на листе Payment History на `newStatus` только если там сейчас «Запрошена».
  */

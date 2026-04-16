@@ -13,6 +13,7 @@ import { logHandle } from '#root/bot/helpers/logging.js'
 import {
   appendSalaryPaymentHistoryRow,
   computePayrollRequestAmountFromUsersRowTiered,
+  listPendingPaymentHistoryRowsForUsersSheetRow,
   monthKeyAndLabelFromRequestDate,
   monthLabelRuFromParts,
   periodRangeTextFromDayKeys,
@@ -867,16 +868,19 @@ feature
       if (!uc)
         return
       const sheetUserPayrollReset = usernameForSheetMatching(ctx)
-      let payrollResetPeriod = '—'
-      if (uc.paymentHistorySheetRows.length > 0) {
-        payrollResetPeriod = await readPaymentHistoryPeriodCellF(
-          ctx,
-          Math.max(...uc.paymentHistorySheetRows),
-        ) || '—'
-      }
       const actorPayrollReset = sheetUserPayrollReset
         ? await findUsersPayrollRowByUsername(ctx, sheetUserPayrollReset)
         : null
+      const pendingPayrollRows = actorPayrollReset
+        ? await listPendingPaymentHistoryRowsForUsersSheetRow(ctx, actorPayrollReset.rowNumber)
+        : []
+      let payrollResetPeriod = '—'
+      if (pendingPayrollRows.length > 0) {
+        payrollResetPeriod = await readPaymentHistoryPeriodCellF(
+          ctx,
+          Math.max(...pendingPayrollRows),
+        ) || '—'
+      }
       const payrollResetPosition = String(actorPayrollReset?.row[6] ?? '').trim() || '—'
       const payrollResetFio = String(actorPayrollReset?.row[1] ?? '').trim() || '—'
 
@@ -885,8 +889,8 @@ feature
 
       const spreadsheetId = ctx.config.sheetsSpreadsheetId.trim()
 
-      if (spreadsheetId && uc.paymentHistorySheetRows.length > 0) {
-        for (const phRow of [...uc.paymentHistorySheetRows].sort((a, b) => b - a)) {
+      if (spreadsheetId && pendingPayrollRows.length > 0) {
+        for (const phRow of [...pendingPayrollRows].sort((a, b) => b - a)) {
           try {
             await removeSalaryPaymentHistoryRow(ctx, phRow)
           }
