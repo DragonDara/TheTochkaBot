@@ -45,6 +45,7 @@ import {
   writeUserCalendarColumnG,
 } from '#root/bot/helpers/payroll-user-calendar-g.js'
 import { findUsersPayrollRowByUsername } from '#root/bot/helpers/payroll-users-sheet.js'
+import { isTelegramMessageNotModifiedError } from '#root/bot/helpers/telegram-api-errors.js'
 import { usernameForSheetMatching } from '#root/bot/helpers/telegram-usernames.js'
 import {
   clearTimesheetApprovalStatusCell,
@@ -542,7 +543,12 @@ feature
           )
         }
         catch (error) {
-          ctx.logger.warn({ err: error }, 'Failed to refresh timesheet calendar after save')
+          if (isTelegramMessageNotModifiedError(error)) {
+            ctx.logger.debug({ err: error }, 'Timesheet calendar reply markup unchanged after save')
+          }
+          else {
+            ctx.logger.warn({ err: error }, 'Failed to refresh timesheet calendar after save')
+          }
         }
 
         try {

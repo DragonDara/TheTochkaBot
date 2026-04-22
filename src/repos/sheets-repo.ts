@@ -22,6 +22,7 @@ export interface SheetsRepo {
     spreadsheetId: string,
     body: sheets_v4.Schema$BatchUpdateSpreadsheetRequest,
   ) => Promise<void>
+  clearRange: (spreadsheetId: string, range: string) => Promise<void>
   getSheetIdByTitle: (spreadsheetId: string, title: string) => Promise<number | null>
 }
 
@@ -81,6 +82,14 @@ export class GoogleSheetsRepo implements SheetsRepo {
     await this.sheets.spreadsheets.batchUpdate({
       spreadsheetId,
       requestBody: body,
+    })
+  }
+
+  async clearRange(spreadsheetId: string, range: string): Promise<void> {
+    await this.sheets.spreadsheets.values.clear({
+      spreadsheetId,
+      range,
+      requestBody: {},
     })
   }
 

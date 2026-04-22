@@ -14,7 +14,11 @@ import { logger } from '#root/logger.js'
 import { GoogleSheetsRepo } from '#root/repos/sheets-repo.js'
 import { createServer, createServerManager } from '#root/server/index.js'
 import { run } from '@grammyjs/runner'
+import { startIikoOlapCron } from '#root/jobs/iiko-olap-cron.js'
+import type { IikoOlapCronHandle } from '#root/jobs/iiko-olap-cron.js'
 /* eslint-enable perfectionist/sort-imports */
+
+const sheetsRepo = createSheetsRepo()
 
 function createSheetsRepo() {
   const spreadsheetId = config.sheetsSpreadsheetId.trim()
@@ -27,6 +31,7 @@ function createSheetsRepo() {
       readRange: async () => [],
       writeRange: async () => {},
       batchUpdate: async () => {},
+      clearRange: async () => {},
       getSheetIdByTitle: async () => null,
     }
   }
@@ -46,20 +51,38 @@ async function startPolling(config: PollingConfig) {
   const bot = createBot(config.botToken, {
     config,
     logger,
-    sheetsRepo: createSheetsRepo(),
+    sheetsRepo,
   })
   let runner: undefined | RunnerHandle
-
-  // graceful shutdown
-  onShutdown(async () => {
-    logger.info('Shutdown')
-    await runner?.stop()
-  })
 
   await Promise.all([
     bot.init(),
     bot.api.deleteWebhook(),
   ])
+
+  const olapCron: IikoOlapCronHandle = (() => {
+    try {
+      return startIikoOlapCron({
+        config,
+        sheetsRepo,
+        logger,
+        expression: config.iikoCloudOlapScheduleCron,
+        timezone: config.iikoCloudOlapScheduleTimezone,
+        runOnStart: config.isDebug,
+      })
+    }
+    catch (err) {
+      logger.error({ err }, 'Failed to start iiko OLAP cron')
+      return { stop: () => {} }
+    }
+  })()
+
+  // graceful shutdown
+  onShutdown(async () => {
+    logger.info('Shutdown')
+    olapCron.stop()
+    await runner?.stop()
+  })
 
   // start bot
   runner = run(bot, {
@@ -80,7 +103,7 @@ async function startWebhook(config: WebhookConfig) {
   const bot = createBot(config.botToken, {
     config,
     logger,
-    sheetsRepo: createSheetsRepo(),
+    sheetsRepo,
   })
   const server = createServer({
     bot,
@@ -92,15 +115,32 @@ async function startWebhook(config: WebhookConfig) {
     port: config.serverPort,
   })
 
-  // graceful shutdown
-  onShutdown(async () => {
-    logger.info('Shutdown')
-    await serverManager.stop()
-  })
-
   // to prevent receiving updates before the bot is ready
   await bot.init()
 
+  const olapCron: IikoOlapCronHandle = (() => {
+    try {
+      return startIikoOlapCron({
+        config,
+        sheetsRepo,
+        logger,
+        expression: config.iikoCloudOlapScheduleCron,
+        timezone: config.iikoCloudOlapScheduleTimezone,
+        runOnStart: config.isDebug,
+      })
+    }
+    catch (err) {
+      logger.error({ err }, 'Failed to start iiko OLAP cron')
+      return { stop: () => {} }
+    }
+  })()
+
+  // graceful shutdown
+  onShutdown(async () => {
+    logger.info('Shutdown')
+    olapCron.stop()
+    await serverManager.stop()
+  })
   // start server
   const info = await serverManager.start()
   logger.info({
