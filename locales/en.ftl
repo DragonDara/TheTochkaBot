@@ -6,6 +6,8 @@ language =
     .description = Change language
 setcommands =
     .description = Set bot commands
+payroll =
+    .description = Export iikoServer payroll slice to Google Sheet (date YYYY-MM-DD)
 
 ## Welcome Feature
 
@@ -59,6 +61,16 @@ keyboard-refreshed = Button labels updated.
 ## Admin Feature
 
 admin-commands-updated = Commands updated.
+
+## Payroll slice (iikoServer → Sheet)
+
+payroll-slice-usage = Send <code>/payroll YYYY-MM-DD</code> (iiko session oklad for that date).
+payroll-slice-forbidden = You don’t have access to this command.
+payroll-slice-started = Getting payroll for { $date } from iikoServer…
+payroll-slice-ok = Done. Appended { $rows } rows to Payroll for { $date }.
+payroll-slice-skipped = Skipped: { $reason }.
+payroll-slice-noop = Not run: { $reason }.
+payroll-slice-error = iiko or Sheets request failed. Check logs and credentials.
 
 ## Employee Feature
 

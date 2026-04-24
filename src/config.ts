@@ -59,6 +59,55 @@ const baseConfigSchema = v.object({
     ),
     'Identification!A2:C',
   ),
+  /** iikoServer: базовый URL до хоста (включая порт, без `/resto`). Пример: `https://127.0.0.1:8080` */
+  iikoServerBaseUrl: v.optional(v.string(), ''),
+  iikoServerLogin: v.optional(v.string(), ''),
+  iikoServerPassword: v.optional(v.string(), ''),
+  iikoServerTimeoutMs: v.optional(v.pipe(v.string(), v.transform(Number), v.number()), '15000'),
+  /** Таймзона ресторана (IANA), для среза «вчера» и node-cron. */
+  iikoServerTz: v.optional(v.string(), 'Asia/Aqtobe'),
+  iikoServerMaxRetries: v.optional(
+    v.pipe(v.string(), v.transform(Number), v.integer(), v.minValue(0), v.maxValue(10)),
+    '3',
+  ),
+  iikoServerRetryBaseMs: v.optional(v.pipe(v.string(), v.transform(Number), v.number()), '500'),
+  /** `true` — не проверять TLS (самоподписанный серт). Если задан `IIKO_SERVER_TLS_CA`, он приоритетнее. */
+  iikoServerTlsInsecure: v.optional(
+    v.pipe(v.string(), v.transform(JSON.parse), v.boolean()),
+    'false',
+  ),
+  /** Путь к PEM (IIKO_SERVER_TLS_CA). */
+  iikoServerTlsCa: v.optional(v.string(), ''),
+  /**
+   * Лист `Payroll`: «якорь» для `append` (без фиксированного числа строк), например `'Payroll'!A:H`.
+   * Столбцы: SliceDate | EmployeeId | ФИО | Должность | Код | Ставка | RateEffectiveFrom | FetchedAt.
+   */
+  sheetsPayrollExportRange: v.optional(
+    v.pipe(
+      v.string(),
+      v.transform(s => (s.trim() === '' ? `'Payroll'!A:H` : s.trim())),
+    ),
+    `'Payroll'!A:H`,
+  ),
+  /** Статус последнего успешного среза: J1 = дата `YYYY-MM-DD`, J2 = ISO-время записи. */
+  sheetsPayrollSyncStatusRange: v.optional(
+    v.pipe(
+      v.string(),
+      v.transform(s => (s.trim() === '' ? 'Payroll!J1:J2' : s.trim())),
+    ),
+    'Payroll!J1:J2',
+  ),
+  /** Cron-выражение (node-cron) для дневного среза окладов. */
+  payrollCronExpr: v.optional(v.string(), '15 3 * * *'),
+  /** Таймзона расписания (IANA), должна совпадать с `IIKO_SERVER_TZ` в обычной конфигурации. */
+  payrollCronTz: v.optional(v.string(), 'Asia/Aqtobe'),
+  /** Сдвой от «сегодня» в `IIKO_SERVER_TZ` для среза: `-1` = вчера. */
+  payrollSliceOffsetDays: v.optional(v.pipe(v.string(), v.transform(Number), v.integer()), '-1'),
+  /** Параллельные запросы `salary/byId` на сессию. */
+  payrollConcurrency: v.optional(
+    v.pipe(v.string(), v.transform(Number), v.integer(), v.minValue(1), v.maxValue(100)),
+    '5',
+  ),
 })
 
 const configSchema = v.variant('botMode', [
@@ -111,6 +160,21 @@ export type Config = v.InferOutput<typeof configSchema> & {
   sheetsTimesheetRange: string
   sheetsPaymentHistoryRange: string
   sheetsIdentificationRange: string
+  iikoServerBaseUrl: string
+  iikoServerLogin: string
+  iikoServerPassword: string
+  iikoServerTimeoutMs: number
+  iikoServerTz: string
+  iikoServerMaxRetries: number
+  iikoServerRetryBaseMs: number
+  iikoServerTlsInsecure: boolean
+  iikoServerTlsCa: string
+  sheetsPayrollExportRange: string
+  sheetsPayrollSyncStatusRange: string
+  payrollCronExpr: string
+  payrollCronTz: string
+  payrollSliceOffsetDays: number
+  payrollConcurrency: number
 }
 export type PollingConfig = v.InferOutput<typeof configSchema['options'][0]> & {
   botAdmins: string[]
@@ -122,6 +186,21 @@ export type PollingConfig = v.InferOutput<typeof configSchema['options'][0]> & {
   sheetsTimesheetRange: string
   sheetsPaymentHistoryRange: string
   sheetsIdentificationRange: string
+  iikoServerBaseUrl: string
+  iikoServerLogin: string
+  iikoServerPassword: string
+  iikoServerTimeoutMs: number
+  iikoServerTz: string
+  iikoServerMaxRetries: number
+  iikoServerRetryBaseMs: number
+  iikoServerTlsInsecure: boolean
+  iikoServerTlsCa: string
+  sheetsPayrollExportRange: string
+  sheetsPayrollSyncStatusRange: string
+  payrollCronExpr: string
+  payrollCronTz: string
+  payrollSliceOffsetDays: number
+  payrollConcurrency: number
 }
 export type WebhookConfig = v.InferOutput<typeof configSchema['options'][1]> & {
   botAdmins: string[]
@@ -133,6 +212,21 @@ export type WebhookConfig = v.InferOutput<typeof configSchema['options'][1]> & {
   sheetsTimesheetRange: string
   sheetsPaymentHistoryRange: string
   sheetsIdentificationRange: string
+  iikoServerBaseUrl: string
+  iikoServerLogin: string
+  iikoServerPassword: string
+  iikoServerTimeoutMs: number
+  iikoServerTz: string
+  iikoServerMaxRetries: number
+  iikoServerRetryBaseMs: number
+  iikoServerTlsInsecure: boolean
+  iikoServerTlsCa: string
+  sheetsPayrollExportRange: string
+  sheetsPayrollSyncStatusRange: string
+  payrollCronExpr: string
+  payrollCronTz: string
+  payrollSliceOffsetDays: number
+  payrollConcurrency: number
 }
 
 export function createConfig(input: v.InferInput<typeof configSchema>) {

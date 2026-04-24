@@ -7,6 +7,7 @@ import { greetingConversation } from '#root/bot/conversations/greeting.js'
 import { adminFeature } from '#root/bot/features/admin.js'
 import { employeeFeature } from '#root/bot/features/employee.js'
 import { languageFeature } from '#root/bot/features/language.js'
+import { payrollSyncFeature } from '#root/bot/features/payroll-sync.js'
 import { unhandledFeature } from '#root/bot/features/unhandled.js'
 import { welcomeFeature } from '#root/bot/features/welcome.js'
 import { errorHandler } from '#root/bot/handlers/error.js'
@@ -72,6 +73,7 @@ export function createBot(token: string, dependencies: Dependencies, botConfig?:
   // Handlers
   protectedBot.use(welcomeFeature)
   protectedBot.use(adminFeature)
+  protectedBot.use(payrollSyncFeature)
   protectedBot.use(employeeFeature)
   if (isMultipleLocales)
     protectedBot.use(languageFeature)

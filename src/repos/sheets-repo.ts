@@ -6,6 +6,8 @@ export type SheetsValueInputOption = 'RAW' | 'USER_ENTERED'
 
 export type SheetsValueRenderOption = 'FORMATTED_VALUE' | 'UNFORMATTED_VALUE'
 
+export type SheetsInsertDataOption = 'INSERT_ROWS' | 'OVERWRITE'
+
 export interface SheetsRepo {
   readRange: (
     spreadsheetId: string,
@@ -17,6 +19,14 @@ export interface SheetsRepo {
     range: string,
     values: string[][],
     valueInputOption?: SheetsValueInputOption,
+  ) => Promise<void>
+  /** Дозапись вниз: `spreadsheets.values.append`, по умолчанию `INSERT_ROWS` + `USER_ENTERED`. */
+  appendRange: (
+    spreadsheetId: string,
+    range: string,
+    values: string[][],
+    valueInputOption?: SheetsValueInputOption,
+    insertDataOption?: SheetsInsertDataOption,
   ) => Promise<void>
   batchUpdate: (
     spreadsheetId: string,
@@ -71,6 +81,24 @@ export class GoogleSheetsRepo implements SheetsRepo {
       requestBody: {
         values,
       },
+    })
+  }
+
+  async appendRange(
+    spreadsheetId: string,
+    range: string,
+    values: string[][],
+    valueInputOption: SheetsValueInputOption = 'USER_ENTERED',
+    insertDataOption: SheetsInsertDataOption = 'INSERT_ROWS',
+  ): Promise<void> {
+    if (values.length === 0)
+      return
+    await this.sheets.spreadsheets.values.append({
+      spreadsheetId,
+      range,
+      valueInputOption,
+      insertDataOption,
+      requestBody: { values },
     })
   }
 

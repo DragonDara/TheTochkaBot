@@ -6,6 +6,8 @@ language =
     .description = Изменяет язык
 setcommands =
     .description = Создает команды для бота
+payroll =
+    .description = Выгрузить срез окладов iikoServer в Google Таблицу (дата YYYY-MM-DD)
 
 ## Welcome Feature
 
@@ -59,6 +61,16 @@ keyboard-refreshed = Подписи на кнопках обновлены.
 ## Admin Feature
 
 admin-commands-updated = Команды обновлены.
+
+## Payroll slice (iikoServer → Sheet)
+
+payroll-slice-usage = Укажите <code>/payroll YYYY-MM-DD</code> (срез оклада iikoServer на дату).
+payroll-slice-forbidden = Нет прав на эту команду.
+payroll-slice-started = Запрашиваю срез оклада на { $date } из iikoServer…
+payroll-slice-ok = Готово. В Payroll добавлено строк: { $rows } (дата среза { $date }).
+payroll-slice-skipped = Пропущено: { $reason }.
+payroll-slice-noop = Не выполнено: { $reason }.
+payroll-slice-error = Ошибка запроса к iiko или Google Sheets. Проверьте логи и доступы.
 
 ## Employee Feature
 

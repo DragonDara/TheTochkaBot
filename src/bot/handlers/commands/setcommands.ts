@@ -49,9 +49,15 @@ export async function buildEmployeeCommandsGroup(
   addCommandLocalizations(language)
   addCommandToChats(language, chatIds)
 
+  const payroll = new Command('payroll', i18n.t('en', 'payroll.description'))
+    .addToScope({ type: 'all_private_chats' })
+  addCommandLocalizations(payroll)
+  addCommandToChats(payroll, chatIds)
+
   return new CommandGroup()
     .add(start)
     .add(language)
+    .add(payroll)
 }
 
 export async function setCommandsHandler(ctx: CommandContext<Context>) {
@@ -77,9 +83,14 @@ export async function setCommandsHandler(ctx: CommandContext<Context>) {
   addCommandLocalizations(setcommands)
   addCommandToChats(setcommands, adminChatIds)
 
+  const payroll = new Command('payroll', i18n.t('en', 'payroll.description'))
+  addCommandLocalizations(payroll)
+  addCommandToChats(payroll, adminChatIds)
+
   const commands = new CommandGroup()
     .add(start)
     .add(language)
+    .add(payroll)
     .add(setcommands)
 
   await commands.setCommands(ctx)

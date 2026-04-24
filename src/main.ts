@@ -12,6 +12,7 @@ import { createBot } from '#root/bot/index.js'
 import { config } from '#root/config.js'
 import { logger } from '#root/logger.js'
 import { GoogleSheetsRepo } from '#root/repos/sheets-repo.js'
+import { startIikoServerPayrollCron } from '#root/jobs/iiko-server-payroll-cron.js'
 import { createServer, createServerManager } from '#root/server/index.js'
 import { run } from '@grammyjs/runner'
 /* eslint-enable perfectionist/sort-imports */
@@ -26,6 +27,7 @@ function createSheetsRepo() {
     return {
       readRange: async () => [],
       writeRange: async () => {},
+      appendRange: async () => {},
       batchUpdate: async () => {},
       getSheetIdByTitle: async () => null,
     }
@@ -43,16 +45,19 @@ function createSheetsRepo() {
 }
 
 async function startPolling(config: PollingConfig) {
+  const sheetsRepo = createSheetsRepo()
+  const payrollCron = startIikoServerPayrollCron({ config, logger, sheetsRepo })
   const bot = createBot(config.botToken, {
     config,
     logger,
-    sheetsRepo: createSheetsRepo(),
+    sheetsRepo,
   })
   let runner: undefined | RunnerHandle
 
   // graceful shutdown
   onShutdown(async () => {
     logger.info('Shutdown')
+    payrollCron.stop()
     await runner?.stop()
   })
 
@@ -77,10 +82,12 @@ async function startPolling(config: PollingConfig) {
 }
 
 async function startWebhook(config: WebhookConfig) {
+  const sheetsRepo = createSheetsRepo()
+  const payrollCron = startIikoServerPayrollCron({ config, logger, sheetsRepo })
   const bot = createBot(config.botToken, {
     config,
     logger,
-    sheetsRepo: createSheetsRepo(),
+    sheetsRepo,
   })
   const server = createServer({
     bot,
@@ -95,6 +102,7 @@ async function startWebhook(config: WebhookConfig) {
   // graceful shutdown
   onShutdown(async () => {
     logger.info('Shutdown')
+    payrollCron.stop()
     await serverManager.stop()
   })
 
