@@ -65,6 +65,7 @@ const baseConfigSchema = v.object({
   sheetsIikoOlapRange: v.optional(v.string(), ''),
   iikoCloudBaseUrl: v.optional(v.string(), 'https://api-ru.iiko.services'),
   iikoCloudOlapScheduleTimezone: v.optional(v.string(), 'Asia/Aqtobe'),
+  iikoCloudOlapPreset: v.optional(v.string(), 'sales_daily'),
 })
 
 const configSchema = v.variant('botMode', [
@@ -123,6 +124,7 @@ export type Config = v.InferOutput<typeof configSchema> & {
   sheetsIikoOlapRange: string
   iikoCloudBaseUrl: string
   iikoCloudOlapScheduleTimezone: string
+  iikoCloudOlapPreset: string
 }
 export type PollingConfig = v.InferOutput<typeof configSchema['options'][0]> & {
   botAdmins: string[]
@@ -140,6 +142,7 @@ export type PollingConfig = v.InferOutput<typeof configSchema['options'][0]> & {
   sheetsIikoOlapRange: string
   iikoCloudBaseUrl: string
   iikoCloudOlapScheduleTimezone: string
+  iikoCloudOlapPreset: string
 }
 export type WebhookConfig = v.InferOutput<typeof configSchema['options'][1]> & {
   botAdmins: string[]
@@ -157,6 +160,7 @@ export type WebhookConfig = v.InferOutput<typeof configSchema['options'][1]> & {
   sheetsIikoOlapRange: string
   iikoCloudBaseUrl: string
   iikoCloudOlapScheduleTimezone: string
+  iikoCloudOlapPreset: string
 }
 
 export function createConfig(input: v.InferInput<typeof configSchema>) {

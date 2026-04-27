@@ -1,9 +1,13 @@
 import type { Config } from '#root/config.js'
-import type { IikoOlapReportRequest, IikoOlapReportResponse } from '#root/integrations/iiko-cloud.js'
+import type { IikoOlapReportResponse } from '#root/integrations/iiko-cloud.js'
 import type { SheetsRepo } from '#root/repos/sheets-repo.js'
 import type { Logger } from 'pino'
 import { writeIikoOlapReport } from '#root/bot/helpers/iiko-olap-sheet.js'
 import { createIikoCloudClient } from '#root/integrations/iiko-cloud.js'
+import {
+  IIKO_OLAP_PRESETS,
+  isIikoOlapPresetKey,
+} from '#root/jobs/iiko-olap-presets.js'
 
 export interface IikoOlapSyncDeps {
   config: Config
@@ -50,28 +54,6 @@ function computePreviousDayPeriod(timezone: string): { from: string, to: string 
   }
 }
 
-/** Отдельная функция под шаблон запроса — удобно править набор полей в одном месте. */
-function buildOlapRequest(
-  config: Config,
-  period: { from: string, to: string },
-): IikoOlapReportRequest {
-  return {
-    organizationIds: [config.iikoCloudOrganizationId],
-    reportType: 'SALES',
-    buildSummary: true,
-    groupByRowFields: ['OpenDate.Typed', 'Counterparty.Name', 'PaymentType.Name'],
-    aggregateFields: ['DishSumInt', 'DishCostAfterDiscount'],
-    filters: {
-      'OpenDate.Typed': {
-        filterType: 'DateRange',
-        periodType: 'CUSTOM',
-        from: period.from,
-        to: period.to,
-      },
-    },
-  }
-}
-
 export async function runIikoOlapSync(deps: IikoOlapSyncDeps): Promise<IikoOlapSyncResult> {
   const { config, sheetsRepo, logger } = deps
   const log = logger.child({ scope: 'iiko-olap-sync' })
@@ -89,21 +71,37 @@ export async function runIikoOlapSync(deps: IikoOlapSyncDeps): Promise<IikoOlapS
     return emptyResult(period, 0, Date.now() - startedAt)
   }
 
+  const presetKey = config.iikoCloudOlapPreset.trim()
+  if (!isIikoOlapPresetKey(presetKey)) {
+    log.error({ presetKey, available: Object.keys(IIKO_OLAP_PRESETS) }, 'unknown iiko OLAP preset, sync aborted')
+    return emptyResult(period, 0, Date.now() - startedAt)
+  }
+
+  const preset = IIKO_OLAP_PRESETS[presetKey]
+  const request = preset.build({
+    organizationId: config.iikoCloudOrganizationId,
+    period,
+  })
+
+  log.info({
+    preset: presetKey,
+    description: preset.description,
+    reportType: request.reportType,
+    period,
+  }, 'iiko OLAP sync started')
+
   const iiko = createIikoCloudClient({
     baseUrl: config.iikoCloudBaseUrl,
     apiLogin: config.iikoCloudApiLogin,
     logger: log,
   })
 
-  const request = buildOlapRequest(config, period)
-  log.info({ period, reportType: request.reportType }, 'iiko OLAP sync started')
-
   let report: IikoOlapReportResponse
   try {
     report = await iiko.getOlapReport(request)
   }
   catch (err) {
-    log.error({ err, period }, 'iiko OLAP fetch failed')
+    log.error({ err, preset: presetKey, period }, 'iiko OLAP fetch failed')
     return {
       executed: true,
       rowsWritten: 0,
@@ -124,10 +122,10 @@ export async function runIikoOlapSync(deps: IikoOlapSyncDeps): Promise<IikoOlapS
     const { rowsWritten } = await writeIikoOlapReport(
       sheetDeps,
       report,
-      { includeSummary: true },
+      { includeSummary: true, columns: preset.sheetColumns },
     )
     const durationMs = Date.now() - startedAt
-    log.info({ rowsWritten, durationMs, period }, 'iiko OLAP sync done')
+    log.info({ preset: presetKey, rowsWritten, durationMs, period }, 'iiko OLAP sync done')
     return {
       executed: true,
       rowsWritten,
@@ -137,7 +135,7 @@ export async function runIikoOlapSync(deps: IikoOlapSyncDeps): Promise<IikoOlapS
     }
   }
   catch (err) {
-    log.error({ err, period }, 'iiko OLAP write-to-sheets failed')
+    log.error({ err, preset: presetKey, period }, 'iiko OLAP write-to-sheets failed')
     return {
       executed: true,
       rowsWritten: 0,
